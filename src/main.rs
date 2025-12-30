@@ -13,6 +13,14 @@ struct Test {
 fn main() {
     let tests = vec![
         Test {
+            name: "Table 1d",
+            func: table::tests::test_1d,
+        },
+        Test {
+            name: "Table zero",
+            func: table::tests::test_zero,
+        },
+        Test {
             name: "RAID5 normal corrupt",
             func: raid::tests::raid5_normal_corrupt,
         },
