@@ -33,13 +33,10 @@ mod tests {
         /// Creates a new drive by XORing the ith byte of every drive together
         pub fn xor_drives(&self) -> Drive<SIZE> {
             let mut data = [0u8; SIZE];
-            for i in 0..SIZE {
-                data[i] = self
-                    .drives
-                    .iter()
-                    .map(|x| x.byte_at(i))
-                    .reduce(|acc, x| acc ^ x)
-                    .unwrap();
+            for drive in self.drives {
+                for i in 0..SIZE {
+                    data[i] ^= drive.byte_at(i);
+                }
             }
             Drive::<SIZE>::from_data(data)
         }

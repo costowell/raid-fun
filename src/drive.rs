@@ -83,4 +83,13 @@ impl<const N: usize> Drive<N> {
     pub fn erase(&mut self) {
         self.data = [0u8; N];
     }
+
+    pub fn xor_drive(&self, other: &Drive<N>) -> Drive<N> {
+        let mut data = [0u8; N];
+        data.clone_from_slice(&self.data);
+        for i in 0..N {
+            data[i] ^= other.byte_at(i);
+        }
+        Drive::from_data(data)
+    }
 }
