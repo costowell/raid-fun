@@ -1,5 +1,5 @@
 use crate::{drive::Drive, table::MTable};
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaidLevel {
@@ -42,6 +42,16 @@ impl State {
         let old_drive = self.drives[r].clone();
         self.drives[r].corrupt();
         old_drive
+    }
+
+    pub fn corrupt_two_random(&mut self) -> (Drive, Drive) {
+        let mut idxs: Vec<usize> = (0..self.drives.len()).into_iter().collect();
+        idxs.shuffle(&mut rand::rng());
+        let old_dx = self.drives[idxs[0]].clone();
+        let old_dy = self.drives[idxs[1]].clone();
+        self.drives[idxs[0]].corrupt();
+        self.drives[idxs[1]].corrupt();
+        (old_dx, old_dy)
     }
 
     /// Finds all drive indices whose stored checksums do not agree with their computed checksums
