@@ -44,7 +44,7 @@ impl MTable {
     pub fn new() -> Self {
         let mut gen_to_num = [0u8; 255];
         let mut num_to_gen = [0u8; 256];
-        gen_to_num[0] = 2; // g^1 = g = 2
+        gen_to_num[0] = 1; // g^0 = e = 1
         for elm in 1..255 {
             gen_to_num[elm] = raid6_generator(gen_to_num[elm - 1]);
         }
