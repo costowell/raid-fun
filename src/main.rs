@@ -5,8 +5,6 @@ mod table;
 
 use std::panic;
 
-use table::MTable;
-
 struct Test {
     name: &'static str,
     func: fn(),

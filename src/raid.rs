@@ -37,30 +37,30 @@ impl State {
     }
 
     /// Corrupts a random drive and returns its original data
-    pub fn corrupt_random(&mut self) -> Drive {
+    pub fn fail_random(&mut self) -> Drive {
         let r = rand::rng().random_range(0..self.drives.len());
         let old_drive = self.drives[r].clone();
-        self.drives[r].corrupt();
+        self.drives[r].fail();
         old_drive
     }
 
     /// Randomly selects two distinct drives and corrupts them
-    pub fn corrupt_two_random(&mut self) -> (Drive, Drive) {
+    pub fn fail_two_random(&mut self) -> (Drive, Drive) {
         let mut idxs: Vec<usize> = (0..self.drives.len()).into_iter().collect();
         idxs.shuffle(&mut rand::rng());
         let old_dx = self.drives[idxs[0]].clone();
         let old_dy = self.drives[idxs[1]].clone();
-        self.drives[idxs[0]].corrupt();
-        self.drives[idxs[1]].corrupt();
+        self.drives[idxs[0]].fail();
+        self.drives[idxs[1]].fail();
         (old_dx, old_dy)
     }
 
     /// Finds all drive indices whose stored checksums do not agree with their computed checksums
-    pub fn find_corrupted(&self) -> Vec<usize> {
+    pub fn find_failed(&self) -> Vec<usize> {
         self.drives
             .iter()
             .enumerate()
-            .filter(|(_, x)| x.cksum() != x.compute_cksum())
+            .filter(|(_, x)| x.is_failed())
             .map(|(i, _)| i)
             .collect()
     }
@@ -195,14 +195,11 @@ pub mod tests {
         // Compute P drive
         let p_drive = raid.p_parity();
 
-        // Corrupt a random drive, save the original content
-        let orig_drive = raid.corrupt_random();
+        // Fail a random drive, save the original content
+        let orig_drive = raid.fail_random();
 
-        // Now that a drive is corrupted, the newly computed parity drive should not equal the original parity drive
-        assert_ne!(raid.p_parity(), p_drive);
-
-        // Determine which drive got corrupted
-        let corrupted_drive = raid.find_corrupted();
+        // Find failed drive
+        let corrupted_drive = raid.find_failed();
         let corrupted_idx = *corrupted_drive
             .first()
             .expect("Should have found a corrupted drive");
@@ -232,10 +229,10 @@ pub mod tests {
         let q_drive = raid.q_parity();
 
         // Corrupt random drive, assume P drive is also corrupted
-        let orig_data_drive = raid.corrupt_random();
+        let orig_data_drive = raid.fail_random();
 
         // Find corrupted drive (assume only one)
-        let corrupted_drive = raid.find_corrupted();
+        let corrupted_drive = raid.find_failed();
         let corrupted_idx = *corrupted_drive
             .first()
             .expect("Should have found a corrupted drive");
@@ -262,20 +259,23 @@ pub mod tests {
         let q = raid.q_parity();
 
         // Corrupt two random drives
-        let (orig_dx, orig_dy) = raid.corrupt_two_random();
+        let (orig_dx, orig_dy) = raid.fail_two_random();
 
         // Get indices
-        let corrupted_drives = raid.find_corrupted();
+        let corrupted_drives = raid.find_failed();
         assert_eq!(corrupted_drives.len(), 2);
         let dx_idx = corrupted_drives[1];
         let dy_idx = corrupted_drives[0];
 
+        // Compute constants A and B
         let a = raid.compute_a_power(dx_idx as u8, dy_idx as u8) as usize;
         let b = raid.compute_b_power(dx_idx as u8, dy_idx as u8) as usize;
 
+        // Compute P and Q but ignoring D_x and D_y
         let p_xy = raid.p_parity_ignore_idxs(vec![dx_idx, dy_idx]);
         let q_xy = raid.q_parity_ignore_idxs(vec![dx_idx, dy_idx]);
 
+        // Compute D_x and D_y
         let p_xor_p_xy = &p.xor_drive(&p_xy);
         let dx = raid.apply_gen(p_xor_p_xy, a).xor_drive(&raid.apply_gen(&q.xor_drive(&q_xy), b));
         let dy = p_xor_p_xy.xor_drive(&dx);
