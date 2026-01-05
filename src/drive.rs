@@ -74,7 +74,7 @@ impl Drive {
 
     /// Corrupts a drive by adding 1 to all bytes
     ///
-    /// This does NOT update the stored checksum
+    /// This does NOT correct the stored checksum
     ///
     /// Why not just randomize the data?
     /// It is quite improbable, and basically impossible at large drive sizes, that the drive does not change.
@@ -84,6 +84,7 @@ impl Drive {
         for byte in &mut self.data {
             *byte = (((*byte as u16) + 1) % 256) as u8
         }
+        self.set_cksum(((self.cksum() as u16 + 1) % 256) as u8);
     }
 
     /// Overwrites the drive with random data

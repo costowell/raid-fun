@@ -5,6 +5,8 @@ mod table;
 
 use std::panic;
 
+use table::MTable;
+
 struct Test {
     name: &'static str,
     func: fn(),
@@ -21,12 +23,28 @@ fn main() {
             func: table::tests::test_zero,
         },
         Test {
-            name: "RAID5 normal corrupt",
+            name: "Table one",
+            func: table::tests::test_one,
+        },
+        Test {
+            name: "Table inverse",
+            func: table::tests::test_inverse,
+        },
+        Test {
+            name: "Table inverse elements",
+            func: table::tests::test_inverse_elements,
+        },
+        Test {
+            name: "RAID5 data drive corrupt",
             func: raid::tests::raid5_normal_corrupt,
         },
         Test {
-            name: "RAID6 normal and P drive corrupt",
+            name: "RAID6 data and P drive corrupt",
             func: raid::tests::raid6_normal_and_p_drive_corrupt,
+        },
+        Test {
+            name: "RAID6 two data drives corrupt",
+            func: raid::tests::raid6_two_normal_corrupt,
         },
     ];
 
