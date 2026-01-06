@@ -30,7 +30,10 @@ impl Drive {
 
     /// Creates a drive from a vec of data
     pub fn from_data(data: Vec<u8>) -> Self {
-        Self { data, failed: false }
+        Self {
+            data,
+            failed: false,
+        }
     }
 
     /// Returns the byte at a given index

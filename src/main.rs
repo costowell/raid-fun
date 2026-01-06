@@ -1,7 +1,7 @@
 // main.rs
 mod drive;
+mod generator;
 mod raid;
-mod table;
 
 use std::panic;
 
@@ -13,24 +13,20 @@ struct Test {
 fn main() {
     let tests = vec![
         Test {
-            name: "Table 1d",
-            func: table::tests::test_1d,
+            name: "Generator 1d",
+            func: generator::tests::test_1d,
         },
         Test {
-            name: "Table zero",
-            func: table::tests::test_zero,
+            name: "Generator zero",
+            func: generator::tests::test_zero,
         },
         Test {
-            name: "Table one",
-            func: table::tests::test_one,
+            name: "Generator one",
+            func: generator::tests::test_one,
         },
         Test {
-            name: "Table inverse",
-            func: table::tests::test_inverse,
-        },
-        Test {
-            name: "Table inverse elements",
-            func: table::tests::test_inverse_elements,
+            name: "Generator inverse",
+            func: generator::tests::test_inverses,
         },
         Test {
             name: "RAID5 data drive corrupt",

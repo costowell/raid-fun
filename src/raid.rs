@@ -1,4 +1,7 @@
-use crate::{drive::Drive, table::MTable};
+use crate::{
+    drive::Drive,
+    generator::{FromPower, Gen},
+};
 use rand::{seq::SliceRandom, Rng};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,7 +15,6 @@ pub struct State {
     drives: Vec<Drive>,
     drive_size: usize,
     level: RaidLevel,
-    table: Option<MTable>,
 }
 
 impl State {
@@ -23,16 +25,10 @@ impl State {
             drives.push(Drive::random(drive_size));
         }
 
-        let table = match level {
-            RaidLevel::Raid6 => Some(MTable::new()),
-            RaidLevel::Raid5 => None,
-        };
-
         Self {
             drives,
             drive_size,
             level,
-            table,
         }
     }
 
@@ -99,12 +95,11 @@ impl State {
             RaidLevel::Raid6,
             "Q parity is only available for RAID6"
         );
-        let table = self.table.as_ref().unwrap();
-
         let mut data = vec![0u8; self.drive_size];
         for (d, drive) in self.drives.iter().enumerate() {
             for i in 0..self.drive_size {
-                data[i] ^= table.applyn(drive.byte_at(i), d as i16);
+                // Q_i = D_xi * g^d
+                data[i] ^= drive.byte_at(i) * Gen::from_power(d as u8);
             }
         }
         Drive::from_data(data)
@@ -117,13 +112,11 @@ impl State {
             RaidLevel::Raid6,
             "Q parity is only available for RAID6"
         );
-        let table = self.table.as_ref().unwrap();
-
         let mut data = vec![0u8; self.drive_size];
         for (d, drive) in self.drives.iter().enumerate() {
             for i in 0..self.drive_size {
                 if !ignore.contains(&d) {
-                    data[i] ^= table.applyn(drive.byte_at(i), d as i16);
+                    data[i] ^= drive.byte_at(i) * Gen::from_power(d as u8);
                 }
             }
         }
@@ -131,17 +124,16 @@ impl State {
     }
 
     /// Applies the generator n times to a drive
-    pub fn apply_gen(&self, drive: &Drive, n: usize) -> Drive {
+    pub fn apply_gen(&self, drive: &Drive, gn: Gen) -> Drive {
         assert_eq!(
             self.level,
             RaidLevel::Raid6,
             "Generator application is only available for RAID6"
         );
-        let table = self.table.as_ref().unwrap();
 
         let mut data = vec![0u8; self.drive_size];
         for i in 0..self.drive_size {
-            data[i] ^= table.applyn(drive.byte_at(i), n as i16);
+            data[i] ^= drive.byte_at(i) * gn;
         }
         Drive::from_data(data)
     }
@@ -150,36 +142,30 @@ impl State {
     /// Formally, this returns n where g^n = (g^y-x)/(g^y-x + 1)
     ///
     /// Source: Page 5, equations 17 and 19, https://www.kernel.org/pub/linux/kernel/people/hpa/raid6.pdf
-    pub fn compute_a_power(&self, x: u8, y: u8) -> u8 {
+    pub fn compute_a(&self, x: u8, y: u8) -> Gen {
         assert_eq!(
             self.level,
             RaidLevel::Raid6,
             "Computing A is only available for RAID6"
         );
-        let table = self.table.as_ref().unwrap();
         let x = x as i16;
         let y = y as i16;
-
-        let power = table.generator_power(table.applyn(1, y-x) ^ 1);
-        ((y - x) - power).rem_euclid(255) as u8
+        Gen::from_power(y - x) / (Gen::from_power(y - x) + 1)
     }
 
     /// Computes the generator power of B given an x and a y which is to be applied to `Q + Q_xy`
     /// Formally, this returns n where g^n = (g^-x)/(g^y-x + 1)
     ///
     /// Source: Page 5, equations 18 and 19, https://www.kernel.org/pub/linux/kernel/people/hpa/raid6.pdf
-    pub fn compute_b_power(&self, x: u8, y: u8) -> u8 {
+    pub fn compute_b(&self, x: u8, y: u8) -> Gen {
         assert_eq!(
             self.level,
             RaidLevel::Raid6,
             "Computing B is only available for RAID6"
         );
-        let table = self.table.as_ref().unwrap();
         let x = x as i16;
         let y = y as i16;
-
-        let power = table.generator_power(table.applyn(1, y-x) ^ 1);
-        (-x + -power).rem_euclid(255) as u8
+        Gen::from_power(-x) / (Gen::from_power(y - x) + 1)
     }
 }
 
@@ -205,7 +191,9 @@ pub mod tests {
             .expect("Should have found a corrupted drive");
 
         // Recompute the corrupted drive
-        let recomp_drive = raid.p_parity_ignore_idxs(vec![corrupted_idx]).xor_drive(&p_drive);
+        let recomp_drive = raid
+            .p_parity_ignore_idxs(vec![corrupted_idx])
+            .xor_drive(&p_drive);
 
         // The recomputed drive should be what the corrupted drive was originally
         assert_eq!(recomp_drive, orig_drive);
@@ -213,14 +201,15 @@ pub mod tests {
         // The original parity drive should now agree with all the XORed drives with the corrupted drive swapped out for the recomputed drive
         assert_eq!(
             p_drive,
-            raid.p_parity_ignore_idxs(vec![corrupted_idx]).xor_drive(&recomp_drive)
+            raid.p_parity_ignore_idxs(vec![corrupted_idx])
+                .xor_drive(&recomp_drive)
         );
     }
 
     /// Tests the detection of corruption in one data drive and one p drive and the reconstitution of their data (RAID6)
     pub fn raid6_normal_and_p_drive_corrupt() {
         // Init with 32 1KiB drives
-        let mut raid = State::new(1024, 32, RaidLevel::Raid6);
+        let mut raid = State::new(32, 32, RaidLevel::Raid6);
 
         // Generate p drive
         let orig_p_drive = raid.p_parity();
@@ -240,19 +229,21 @@ pub mod tests {
         // Recompute corrupted data drive
         let qx_drive = raid.q_parity_ignore_idxs(vec![corrupted_idx]);
         let tmp = q_drive.xor_drive(&qx_drive);
-        let g_inv = 255 - corrupted_idx;
+        let g_inv = Gen::from_power(corrupted_idx as u8).inverse();
         let data_drive = raid.apply_gen(&tmp, g_inv);
         assert_eq!(orig_data_drive, data_drive);
 
         // Recompute P drive
-        let p_drive = raid.p_parity_ignore_idxs(vec![corrupted_idx]).xor_drive(&data_drive);
+        let p_drive = raid
+            .p_parity_ignore_idxs(vec![corrupted_idx])
+            .xor_drive(&data_drive);
         assert_eq!(orig_p_drive, p_drive);
     }
 
     /// Tests the detection of corruption in two data drives and the reconstitution of their data (RAID6)
     pub fn raid6_two_normal_corrupt() {
         // Init with 32 1KiB drives
-        let mut raid = State::new(1024, 32, RaidLevel::Raid6);
+        let mut raid = State::new(32, 32, RaidLevel::Raid6);
 
         // Generate p and q drive
         let p = raid.p_parity();
@@ -268,8 +259,8 @@ pub mod tests {
         let dy_idx = corrupted_drives[0];
 
         // Compute constants A and B
-        let a = raid.compute_a_power(dx_idx as u8, dy_idx as u8) as usize;
-        let b = raid.compute_b_power(dx_idx as u8, dy_idx as u8) as usize;
+        let a = raid.compute_a(dx_idx as u8, dy_idx as u8);
+        let b = raid.compute_b(dx_idx as u8, dy_idx as u8);
 
         // Compute P and Q but ignoring D_x and D_y
         let p_xy = raid.p_parity_ignore_idxs(vec![dx_idx, dy_idx]);
@@ -277,7 +268,9 @@ pub mod tests {
 
         // Compute D_x and D_y
         let p_xor_p_xy = &p.xor_drive(&p_xy);
-        let dx = raid.apply_gen(p_xor_p_xy, a).xor_drive(&raid.apply_gen(&q.xor_drive(&q_xy), b));
+        let dx = raid
+            .apply_gen(p_xor_p_xy, a)
+            .xor_drive(&raid.apply_gen(&q.xor_drive(&q_xy), b));
         let dy = p_xor_p_xy.xor_drive(&dx);
         assert!(dx == orig_dx || dx == orig_dy);
         assert!(dy == orig_dx || dy == orig_dy);
