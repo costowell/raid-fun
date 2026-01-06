@@ -32,7 +32,7 @@ impl State {
         }
     }
 
-    /// Corrupts a random drive and returns its original data
+    /// Marks a random drive as failed and returns a copy of the drive before failure
     pub fn fail_random(&mut self) -> Drive {
         let r = rand::rng().random_range(0..self.drives.len());
         let old_drive = self.drives[r].clone();
@@ -40,7 +40,7 @@ impl State {
         old_drive
     }
 
-    /// Randomly selects two distinct drives and corrupts them
+    /// Randomly selects two distinct drives and marks them as failed
     pub fn fail_two_random(&mut self) -> (Drive, Drive) {
         let mut idxs: Vec<usize> = (0..self.drives.len()).into_iter().collect();
         idxs.shuffle(&mut rand::rng());
@@ -51,7 +51,7 @@ impl State {
         (old_dx, old_dy)
     }
 
-    /// Finds all drive indices whose stored checksums do not agree with their computed checksums
+    /// Finds all drive indices who have failed
     pub fn find_failed(&self) -> Vec<usize> {
         self.drives
             .iter()
@@ -173,8 +173,8 @@ impl State {
 pub mod tests {
     use super::*;
 
-    /// Tests the detection of corruption in a data drive and the reconstitution of its data
-    pub fn raid5_normal_corrupt() {
+    /// Tests the reconstitution of data after a single drive failure (RAID5)
+    pub fn raid5_normal_fail() {
         // Init with 32 1KiB drives
         let mut raid = State::new(1024, 32, RaidLevel::Raid5);
 
@@ -185,29 +185,29 @@ pub mod tests {
         let orig_drive = raid.fail_random();
 
         // Find failed drive
-        let corrupted_drive = raid.find_failed();
-        let corrupted_idx = *corrupted_drive
+        let failed_drive = raid.find_failed();
+        let failed_idx = *failed_drive
             .first()
-            .expect("Should have found a corrupted drive");
+            .expect("Should have found a failed drive");
 
-        // Recompute the corrupted drive
+        // Recompute the failed drive
         let recomp_drive = raid
-            .p_parity_ignore_idxs(vec![corrupted_idx])
+            .p_parity_ignore_idxs(vec![failed_idx])
             .xor_drive(&p_drive);
 
-        // The recomputed drive should be what the corrupted drive was originally
+        // The recomputed drive should be what the failed drive was originally
         assert_eq!(recomp_drive, orig_drive);
 
-        // The original parity drive should now agree with all the XORed drives with the corrupted drive swapped out for the recomputed drive
+        // The original parity drive should now agree with all the XORed drives with the failed drive swapped out for the recomputed drive
         assert_eq!(
             p_drive,
-            raid.p_parity_ignore_idxs(vec![corrupted_idx])
+            raid.p_parity_ignore_idxs(vec![failed_idx])
                 .xor_drive(&recomp_drive)
         );
     }
 
-    /// Tests the detection of corruption in one data drive and one p drive and the reconstitution of their data (RAID6)
-    pub fn raid6_normal_and_p_drive_corrupt() {
+    /// Tests the reconstitution of data after a single data and parity drive failure (RAID6)
+    pub fn raid6_normal_and_p_drive_fail() {
         // Init with 32 1KiB drives
         let mut raid = State::new(32, 32, RaidLevel::Raid6);
 
@@ -217,31 +217,31 @@ pub mod tests {
         // Generate q drive
         let q_drive = raid.q_parity();
 
-        // Corrupt random drive, assume P drive is also corrupted
+        // Mark a random drive as failed, assume P drive has also failed
         let orig_data_drive = raid.fail_random();
 
-        // Find corrupted drive (assume only one)
-        let corrupted_drive = raid.find_failed();
-        let corrupted_idx = *corrupted_drive
+        // Find failed drive (assume only one)
+        let failed_drive = raid.find_failed();
+        let failed_idx = *failed_drive
             .first()
-            .expect("Should have found a corrupted drive");
+            .expect("Should have found a failed drive");
 
-        // Recompute corrupted data drive
-        let qx_drive = raid.q_parity_ignore_idxs(vec![corrupted_idx]);
+        // Recompute failed data drive
+        let qx_drive = raid.q_parity_ignore_idxs(vec![failed_idx]);
         let tmp = q_drive.xor_drive(&qx_drive);
-        let g_inv = Gen::from_power(corrupted_idx as u8).inverse();
+        let g_inv = Gen::from_power(failed_idx as u8).inverse();
         let data_drive = raid.apply_gen(&tmp, g_inv);
         assert_eq!(orig_data_drive, data_drive);
 
         // Recompute P drive
         let p_drive = raid
-            .p_parity_ignore_idxs(vec![corrupted_idx])
+            .p_parity_ignore_idxs(vec![failed_idx])
             .xor_drive(&data_drive);
         assert_eq!(orig_p_drive, p_drive);
     }
 
-    /// Tests the detection of corruption in two data drives and the reconstitution of their data (RAID6)
-    pub fn raid6_two_normal_corrupt() {
+    /// Tests the reconstitution of data after two data drives fail (RAID6)
+    pub fn raid6_two_normal_fail() {
         // Init with 32 1KiB drives
         let mut raid = State::new(32, 32, RaidLevel::Raid6);
 
@@ -249,14 +249,14 @@ pub mod tests {
         let p = raid.p_parity();
         let q = raid.q_parity();
 
-        // Corrupt two random drives
+        // Mark two random drives as failed
         let (orig_dx, orig_dy) = raid.fail_two_random();
 
         // Get indices
-        let corrupted_drives = raid.find_failed();
-        assert_eq!(corrupted_drives.len(), 2);
-        let dx_idx = corrupted_drives[1];
-        let dy_idx = corrupted_drives[0];
+        let failed_drives = raid.find_failed();
+        assert_eq!(failed_drives.len(), 2);
+        let dx_idx = failed_drives[1];
+        let dy_idx = failed_drives[0];
 
         // Compute constants A and B
         let a = raid.compute_a(dx_idx as u8, dy_idx as u8);

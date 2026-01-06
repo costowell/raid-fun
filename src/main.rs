@@ -29,16 +29,16 @@ fn main() {
             func: generator::tests::test_inverses,
         },
         Test {
-            name: "RAID5 data drive corrupt",
-            func: raid::tests::raid5_normal_corrupt,
+            name: "RAID5 data drive fail",
+            func: raid::tests::raid5_normal_fail,
         },
         Test {
-            name: "RAID6 data and P drive corrupt",
-            func: raid::tests::raid6_normal_and_p_drive_corrupt,
+            name: "RAID6 data and P drive fail",
+            func: raid::tests::raid6_normal_and_p_drive_fail,
         },
         Test {
-            name: "RAID6 two data drives corrupt",
-            func: raid::tests::raid6_two_normal_corrupt,
+            name: "RAID6 two data drives fail",
+            func: raid::tests::raid6_two_normal_fail,
         },
     ];
 
