@@ -209,7 +209,7 @@ pub mod tests {
     /// Tests the reconstitution of data after a single data and parity drive failure (RAID6)
     pub fn raid6_normal_and_p_drive_fail() {
         // Init with 32 1KiB drives
-        let mut raid = State::new(32, 32, RaidLevel::Raid6);
+        let mut raid = State::new(1024, 32, RaidLevel::Raid6);
 
         // Generate p drive
         let orig_p_drive = raid.p_parity();
@@ -243,7 +243,7 @@ pub mod tests {
     /// Tests the reconstitution of data after two data drives fail (RAID6)
     pub fn raid6_two_normal_fail() {
         // Init with 32 1KiB drives
-        let mut raid = State::new(32, 32, RaidLevel::Raid6);
+        let mut raid = State::new(1024, 32, RaidLevel::Raid6);
 
         // Generate p and q drive
         let p = raid.p_parity();
