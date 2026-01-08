@@ -124,6 +124,10 @@ impl Gen {
         if self.n == ZERO {
             panic!("Division by zero not allowed.")
         }
+        // g^0 is it's own inverse
+        if self.n == 0 {
+            return self;
+        }
         Self { n: 255 - self.n }
     }
     /// Returns g^n
