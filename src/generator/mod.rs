@@ -154,7 +154,7 @@ pub mod tests {
     pub fn test_zero() {
         // 0 * g^i == 0
         for i in 0..255 {
-            assert_eq!(Gen::zero()*Gen::from_power(i), Gen::zero());
+            assert_eq!(Gen::zero() * Gen::from_power(i), Gen::zero());
         }
     }
 
