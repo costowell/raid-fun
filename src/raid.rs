@@ -133,7 +133,7 @@ impl State {
 
         let mut data = vec![0u8; self.drive_size];
         for i in 0..self.drive_size {
-            data[i] ^= drive.byte_at(i) * gn;
+            data[i] = (drive.byte_at(i) * gn).value();
         }
         Drive::from_data(data)
     }
