@@ -1,6 +1,6 @@
 use std::ops::Not;
 
-use rand::Rng;
+use rand::{seq::IteratorRandom, Rng};
 
 use crate::drive::{self, Drive, DriveError};
 
@@ -162,31 +162,42 @@ impl RaidSim {
     }
 
     /// Returns a vector of indices for all failed drives
-    pub fn failed(&self) -> Vec<usize> {
+    pub fn failed(&self) -> impl Iterator<Item = &Drive> {
         self.drives
             .iter()
-            .enumerate()
-            .filter_map(|(i, d)| d.has_failed().then_some(i))
-            .collect()
+            .filter_map(|d| d.has_failed().then_some(d))
     }
-    /// Returns a vector of indices for all drives that haven't failed
-    pub fn not_failed(&self) -> Vec<usize> {
+    /// Returns an iterator of immutable references to drives that haven't failed
+    pub fn not_failed(&self) -> impl Iterator<Item = &Drive> {
         self.drives
             .iter()
-            .enumerate()
-            .filter_map(|(i, d)| d.has_failed().not().then_some(i))
-            .collect()
+            .filter_map(|d| d.has_failed().not().then_some(d))
+    }
+    /// Returns an iterator of mutable references to drives that haven't failed
+    pub fn not_failed_mut(&mut self) -> impl Iterator<Item = &mut Drive> {
+        self.drives
+            .iter_mut()
+            .filter_map(|d| d.has_failed().not().then_some(d))
     }
     /// Chooses a random drive that hasn't failed yet and marks it as failed
     pub fn fail_random(&mut self) {
-        let not_failed = self.not_failed();
-        let r = rand::rng().random_range(0..not_failed.len());
-        self.drives[not_failed[r]].fail();
+        let drive = self.not_failed_mut().choose(&mut rand::rng()).unwrap();
+        drive.fail();
+        self.update_state();
+    }
+    /// Chooses a random data drive that hasn't failed yet and marks it as failed
+    pub fn fail_random_data(&mut self) {
+        let drive = self
+            .data_drives_mut()
+            .filter_map(|(_, d)| d.has_failed().not().then_some(d))
+            .choose(&mut rand::rng())
+            .unwrap();
+        drive.fail();
         self.update_state();
     }
     /// Updates the state of the array to match
     pub fn update_state(&mut self) {
-        let count = self.failed().iter().count();
+        let count = self.failed().count();
         if count > 2 || (count > 1 && self.mode == RaidMode::Raid5) {
             self.state = RaidState::Failed;
         } else if count > 0 {
