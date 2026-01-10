@@ -103,7 +103,9 @@ impl RaidSim {
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
         let (_, drive) = self.data_drives_mut().nth(drive_index).unwrap();
-        drive.write(drive_offset, data)?;
+        if !drive.has_failed() {
+            drive.write(drive_offset, data)?;
+        }
         let p_parity = self.p_parity_mut();
         p_parity.write(drive_offset, p_parity.read(drive_offset)? ^ old_data ^ data)?;
         Ok(())
@@ -324,6 +326,8 @@ mod tests {
         sim.fail_random_data();
         assert_eq!(sim.state(), RaidState::Degraded);
         assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
     }
 
     #[test]
@@ -331,6 +335,8 @@ mod tests {
         let (mut sim, data) = init_random(RaidMode::Raid5);
         sim.fail_p_parity();
         assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
         assert_sim_equal(&sim, &data);
     }
 
