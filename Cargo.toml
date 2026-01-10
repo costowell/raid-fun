@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
+anyhow = {version = "1.0.100", features = ["backtrace"]}
 base64 = "0.22.1"
 log = "0.4.28"
 rand = "0.9.2"

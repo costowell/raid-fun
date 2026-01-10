@@ -70,6 +70,13 @@ impl Div<Gen> for Gen {
         self * rhs.inverse()
     }
 }
+impl Div<Gen> for u8 {
+    type Output = Gen;
+
+    fn div(self, rhs: Gen) -> Self::Output {
+        Gen::from(self) / rhs
+    }
+}
 
 impl Add<u8> for Gen {
     type Output = Self;
@@ -103,6 +110,13 @@ impl FromPower<i16> for Gen {
 }
 impl FromPower<i32> for Gen {
     fn from_power(n: i32) -> Self {
+        Self {
+            n: n.rem_euclid(255) as u8,
+        }
+    }
+}
+impl FromPower<usize> for Gen {
+    fn from_power(n: usize) -> Self {
         Self {
             n: n.rem_euclid(255) as u8,
         }

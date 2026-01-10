@@ -2,8 +2,12 @@ use std::ops::Not;
 
 use rand::seq::IteratorRandom;
 
-use crate::drive::{self, Drive, DriveError};
+use crate::{
+    drive::{self, Drive, DriveError},
+    generator::{FromPower, Gen},
+};
 
+use anyhow::{Context, Result};
 use thiserror::Error;
 
 const P_INDEX: usize = 0;
@@ -22,8 +26,6 @@ pub enum RaidError {
     #[error("array not initialized")]
     NotInitialized,
 }
-
-type Result<T> = std::result::Result<T, RaidError>;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RaidMode {
@@ -94,47 +96,115 @@ impl RaidSim {
     /// Writes a byte at a specific offset in the array
     pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
         if offset >= self.size() {
-            return Err(RaidError::OffsetTooLarge(offset));
+            return Err(RaidError::OffsetTooLarge(offset).into());
         }
         if self.state() == RaidState::Failed {
-            return Err(RaidError::Failed);
+            return Err(RaidError::Failed.into());
         }
         let old_data = self.read(offset).unwrap();
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
-        let (_, drive) = self.data_drives_mut().nth(drive_index).unwrap();
+        let drive = self.data_drives_mut().nth(drive_index).unwrap();
         if !drive.has_failed() {
             drive.write(drive_offset, data)?;
         }
+
+        // Compute new P parity
         let p_parity = self.p_parity_mut();
-        p_parity.write(drive_offset, p_parity.read(drive_offset)? ^ old_data ^ data)?;
+        if !p_parity.has_failed() {
+            // Formally, if p is the original P parity byte and p_k is the new P parity byte where d_k (the byte on drive k) becomes d'
+            // Then it follows that
+            // p   = d_0 + d_1 + ... + d_n-1
+            // p_k = d_0 + d_1 + ... + d' + ... + d_n-1
+            // Then
+            // p + p_k = d_k + d_'
+            // Therefore
+            // p_k = p + d_k + d'
+            // Which means XORing the P parity byte, the old data on the drive, and the new data will yield the new P parity byte
+            p_parity.write(drive_offset, p_parity.read(drive_offset)? ^ old_data ^ data)?;
+        }
+
+        // Compute new Q parity
+        let q_parity = self.q_parity();
+        if self.mode == RaidMode::Raid6 && !q_parity.has_failed() {
+            let q_parity = self.q_parity_mut();
+            // Formally, if q is the original Q parity byte and q_k is the new Q parity byte where d_k (the byte on drive k) becomes d'
+            // Then it follows that
+            // q   = (g^0 * d_0) + (g^1 * d_1) + ... + (g^n-1 * d_n-1)
+            // q_k = (g^0 * d_0) + (g^1 * d_1) + ... + (g^k * d') + ... + (g^n-1 * d_n-1)
+            // Then
+            // q + q_k = (g^k * d_k) + (g^k * d')
+            // Therefore
+            // q_k = q + g^k * (d_k + d')
+            // Which means XORing the old and new data, applying the generator g^k, then XORing the original Q parity byte will yield the new P parity byte
+            q_parity.write(
+                drive_offset,
+                q_parity.read(drive_offset)?
+                    ^ (Gen::from_power(drive_index) * (old_data ^ data)).value(),
+            )?;
+        }
         Ok(())
     }
 
     /// Reads a byte at a specific offset in the array
     pub fn read(&self, offset: usize) -> Result<u8> {
         if offset >= self.size() {
-            return Err(RaidError::OffsetTooLarge(offset));
+            return Err(RaidError::OffsetTooLarge(offset).into());
         }
         if self.state() == RaidState::Failed {
-            return Err(RaidError::Failed);
+            return Err(RaidError::Failed.into());
         }
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
-        let (abs_idx, drive) = self.data_drives().nth(drive_index).unwrap();
-        if drive.has_failed() {
-            let data = self
-                .data_drives()
-                .filter(|(i, _)| *i != abs_idx)
-                .map(|(_, d)| d.read(drive_offset))
-                .collect::<drive::Result<Vec<u8>>>()?
-                .into_iter()
-                .reduce(|acc, x| acc ^ x)
-                .unwrap()
-                ^ self.p_parity().read(drive_offset)?;
-            Ok(data)
-        } else {
+        let drive = self.data_drives().nth(drive_index).unwrap();
+        if !drive.has_failed() {
             Ok(drive.read(drive_offset)?)
+        } else {
+            // At this point we are guaranteed at least one failed data drive because its the one we are trying to write to.
+            // We are also guaranteed that the array isn't in a failed state because we check for it.
+            // If we are RAID 5, we know there is exactly one failed data drive and we should use P parity to read.
+            // If we are RAID 6, we know there is at most two failed drives, at least one being a data drive.
+            //
+            // In the case of one failed drive, it must be a data drive, therefore read using P parity in both RAID modes.
+            // In the case of two failed drives, we have exactly three cases:
+            // - Two data drives failed: Use P and Q parity to read
+            // - One data drive and P parity failed: Use Q parity to read
+            // - One data drive and Q parity failed: Use P parity to read
+
+            // If one drive failed or two have failed and the other is Q parity
+            if self.failed().count() == 1 || self.q_parity().has_failed() {
+                let data = self
+                    .data_drives()
+                    .enumerate()
+                    .filter(|(i, _)| *i != drive_index)
+                    .map(|(_, d)| d.read(drive_offset))
+                    .collect::<drive::Result<Vec<u8>>>()?
+                    .into_iter()
+                    .reduce(|acc, x| acc ^ x)
+                    .unwrap()
+                    ^ self
+                        .p_parity()
+                        .read(drive_offset)
+                        .context("failed to read parity")?;
+                Ok(data)
+            } else if self.p_parity().has_failed() {
+                let data = self
+                    .data_drives()
+                    .enumerate()
+                    .filter(|(i, _)| *i != drive_index)
+                    .map(|(i, d)| d.read(drive_offset).map(|x| (i, x)))
+                    .collect::<drive::Result<Vec<(usize, u8)>>>()?
+                    .into_iter()
+                    .fold(0, |acc, (i, x)| acc ^ (Gen::from_power(i) * x).value())
+                    ^ self
+                        .q_parity()
+                        .read(drive_offset)
+                        .context("failed to read parity")?;
+                let data = data / Gen::from_power(drive_index);
+                Ok(data.value())
+            } else {
+                unimplemented!("")
+            }
         }
     }
 
@@ -147,39 +217,30 @@ impl RaidSim {
         &mut self.drives[P_INDEX]
     }
 
-    /// Updates the P parity drive to be consistent with the current array
-    fn write_p_parity(&mut self) -> Result<()> {
-        let mut p_drive_data = vec![0u8; self.drive_size];
-        for (_, d) in self.data_drives() {
-            for i in 0..self.drive_size {
-                p_drive_data[i] ^= d.read(i)?;
-            }
-        }
-        self.p_parity_mut().set_data(p_drive_data)?;
-        Ok(())
+    /// Returns an immutable reference to the drive used for Q parity
+    pub fn q_parity(&self) -> &Drive {
+        &self.drives[Q_INDEX]
+    }
+    /// Returns a mutable reference to the drive used for Q parity
+    fn q_parity_mut(&mut self) -> &mut Drive {
+        &mut self.drives[Q_INDEX]
     }
 
     /// Returns an iterator of tuples (I, D) where I is the absolute index in the drives array and D is an immutable reference to the corresponding data drive
-    pub fn data_drives(&self) -> impl Iterator<Item = (usize, &Drive)> {
+    pub fn data_drives(&self) -> impl Iterator<Item = &Drive> {
         let start = match self.mode {
             RaidMode::Raid5 => 1,
             RaidMode::Raid6 => 2,
         };
-        self.drives[start..]
-            .iter()
-            .enumerate()
-            .map(move |(i, d)| (i + start, d))
+        self.drives[start..].iter()
     }
     /// Returns an iterator of tuples (I, D) where I is the absolute index in the drives array and D is a mutable reference to the corresponding data drive
-    fn data_drives_mut(&mut self) -> impl Iterator<Item = (usize, &mut Drive)> {
+    fn data_drives_mut(&mut self) -> impl Iterator<Item = &mut Drive> {
         let start = match self.mode {
             RaidMode::Raid5 => 1,
             RaidMode::Raid6 => 2,
         };
-        self.drives[start..]
-            .iter_mut()
-            .enumerate()
-            .map(move |(i, d)| (i + start, d))
+        self.drives[start..].iter_mut()
     }
 
     /// Returns an iterator of immutable references to drives that have failed
@@ -221,7 +282,7 @@ impl RaidSim {
     pub fn fail_random_data(&mut self) {
         let drive = self
             .data_drives_mut()
-            .filter_map(|(_, d)| d.has_failed().not().then_some(d))
+            .filter_map(|d| d.has_failed().not().then_some(d))
             .choose(&mut rand::rng())
             .unwrap();
         drive.fail();
@@ -229,6 +290,10 @@ impl RaidSim {
     /// Mark the P parity drive as failed
     pub fn fail_p_parity(&mut self) {
         self.p_parity_mut().fail();
+    }
+    /// Mark the Q parity drive as failed
+    pub fn fail_q_parity(&mut self) {
+        self.q_parity_mut().fail();
     }
     /// Replaces failed drives with empty, functioning drives
     pub fn replace_failed_drives(&mut self) {
@@ -270,8 +335,8 @@ impl RaidSim {
     pub fn reconstitute(&mut self) -> Result<()> {
         match self.state() {
             RaidState::Ok => Ok(()),
-            RaidState::Failed => Err(RaidError::Failed),
-            RaidState::Uninit => Err(RaidError::NotInitialized),
+            RaidState::Failed => Err(RaidError::Failed.into()),
+            RaidState::Uninit => Err(RaidError::NotInitialized.into()),
             RaidState::Degraded => match self.mode {
                 RaidMode::Raid5 => self.reconstitute_raid5(),
                 RaidMode::Raid6 => unimplemented!("coming soon TM"),
@@ -291,13 +356,18 @@ mod tests {
 
     fn init_random(mode: RaidMode) -> (RaidSim, Vec<u8>) {
         let mut sim = RaidSim::new(mode, NUM_DRIVES, DRIVE_SIZE);
+        sim.init().expect("Shit");
+        let data = write_random(&mut sim);
+        (sim, data)
+    }
+
+    fn write_random(sim: &mut RaidSim) -> Vec<u8> {
         let mut data = vec![0u8; sim.size()];
         rand::rng().fill(data.as_mut_slice());
-        sim.init().expect("Shit");
         for i in 0..sim.size() {
             sim.write(i, data[i]).unwrap();
         }
-        (sim, data)
+        data
     }
 
     fn assert_sim_equal(sim: &RaidSim, data: &Vec<u8>) {
@@ -388,6 +458,76 @@ mod tests {
         sim.replace_failed_drives();
         sim.reconstitute().unwrap();
         assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_test_init() {
+        let (sim, data) = init_random(RaidMode::Raid6);
+        assert_sim_equal(&sim, &data);
+        assert_eq!(sim.state(), RaidState::Ok);
+    }
+
+    #[test]
+    fn raid6_one_data_drive_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_random_data();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_p_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5);
+        sim.fail_p_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_q_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5);
+        sim.fail_q_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_one_data_drive_and_p_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_random_data();
+        sim.fail_p_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_one_data_drive_and_q_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_random_data();
+        sim.fail_q_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_p_parity_and_q_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_p_parity();
+        sim.fail_q_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
         assert_sim_equal(&sim, &data);
     }
 }
