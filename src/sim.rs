@@ -169,11 +169,17 @@ impl RaidSim {
             .map(move |(i, d)| (i + start, d))
     }
 
-    /// Returns a vector of indices for all failed drives
+    /// Returns an iterator of immutable references to drives that have failed
     pub fn failed(&self) -> impl Iterator<Item = &Drive> {
         self.drives
             .iter()
             .filter_map(|d| d.has_failed().then_some(d))
+    }
+    /// Returns an iterator of immutable references to drives that are unformatted
+    pub fn unformatted(&self) -> impl Iterator<Item = &Drive> {
+        self.drives
+            .iter()
+            .filter_map(|d| d.is_formatted().not().then_some(d))
     }
     /// Returns an iterator of immutable references to drives that haven't failed
     pub fn not_failed(&self) -> impl Iterator<Item = &Drive> {
@@ -210,7 +216,7 @@ impl RaidSim {
     }
     /// Updates the state of the array to match
     pub fn update_state(&mut self) {
-        let count = self.failed().count();
+        let count = self.failed().count() + self.unformatted().count();
         if count > 2 || (count > 1 && self.mode == RaidMode::Raid5) {
             self.state = RaidState::Failed;
         } else if count > 0 {
@@ -227,8 +233,11 @@ mod tests {
 
     use super::*;
 
-    fn init_random(mode: RaidMode, num_drives: usize, drive_size: usize) -> (RaidSim, Vec<u8>) {
-        let mut sim = RaidSim::new(mode, num_drives, drive_size);
+    const NUM_DRIVES: usize = 16;
+    const DRIVE_SIZE: usize = 1024;
+
+    fn init_random(mode: RaidMode) -> (RaidSim, Vec<u8>) {
+        let mut sim = RaidSim::new(mode, NUM_DRIVES, DRIVE_SIZE);
         let mut data = vec![0u8; sim.size()];
         rand::rng().fill(data.as_mut_slice());
         sim.init().expect("Shit");
@@ -253,14 +262,14 @@ mod tests {
 
     #[test]
     fn raid5_test_init() {
-        let (sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        let (sim, data) = init_random(RaidMode::Raid5);
         assert_sim_equal(&sim, &data);
         assert_eq!(sim.state(), RaidState::Ok);
     }
 
     #[test]
     fn raid5_one_data_drive_failure() {
-        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        let (mut sim, data) = init_random(RaidMode::Raid5);
         sim.fail_random_data();
         assert_eq!(sim.state(), RaidState::Degraded);
         assert_sim_equal(&sim, &data);
@@ -268,7 +277,7 @@ mod tests {
 
     #[test]
     fn raid5_p_parity_failure() {
-        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        let (mut sim, data) = init_random(RaidMode::Raid5);
         sim.fail_p_parity();
         assert_eq!(sim.state(), RaidState::Degraded);
         assert_sim_equal(&sim, &data);
@@ -276,7 +285,7 @@ mod tests {
 
     #[test]
     fn raid5_one_data_drive_and_p_parity_failure() {
-        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        let (mut sim, _) = init_random(RaidMode::Raid5);
         sim.fail_random_data();
         sim.fail_p_parity();
         assert_eq!(sim.state(), RaidState::Failed);
@@ -286,11 +295,21 @@ mod tests {
 
     #[test]
     fn raid5_two_data_drive_failure() {
-        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        let (mut sim, _) = init_random(RaidMode::Raid5);
         sim.fail_random_data();
         sim.fail_random_data();
         assert_eq!(sim.state(), RaidState::Failed);
         assert!(sim.write(0, 0).is_err());
         assert!(sim.read(0).is_err());
+    }
+
+    #[test]
+    fn raid5_unformatted_still_degraded() {
+        let (mut sim, _) = init_random(RaidMode::Raid5);
+        assert_eq!(sim.state(), RaidState::Ok);
+        sim.fail_random();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        sim.replace_failed_drives();
+        assert_eq!(sim.state(), RaidState::Degraded);
     }
 }
