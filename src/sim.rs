@@ -17,6 +17,10 @@ pub enum RaidError {
     OffsetTooLarge(usize),
     #[error("array failed")]
     Failed,
+    #[error("drives must be replaced before being reconstituted")]
+    DrivesNeedReplaced,
+    #[error("array not initialized")]
+    NotInitialized,
 }
 
 type Result<T> = std::result::Result<T, RaidError>;
@@ -44,7 +48,6 @@ pub struct RaidSim {
     drives: Vec<Drive>,
     drive_size: usize,
     mode: RaidMode,
-    state: RaidState,
 }
 
 impl RaidSim {
@@ -55,7 +58,6 @@ impl RaidSim {
                 .into_iter()
                 .map(|_| Drive::empty(drive_size))
                 .collect(),
-            state: RaidState::Uninit,
             drive_size,
             mode,
         }
@@ -68,7 +70,17 @@ impl RaidSim {
 
     /// Gets the current state of the array
     pub fn state(&self) -> RaidState {
-        self.state.clone()
+        let unformatted = self.unformatted().count();
+        let count = self.failed().count() + unformatted;
+        if unformatted == self.drives.len() {
+            RaidState::Uninit
+        } else if count > 2 || (count > 1 && self.mode == RaidMode::Raid5) {
+            RaidState::Failed
+        } else if count > 0 {
+            RaidState::Degraded
+        } else {
+            RaidState::Ok
+        }
     }
 
     /// Initializes the array by formatting all drives
@@ -76,7 +88,6 @@ impl RaidSim {
         for d in &mut self.drives {
             d.format();
         }
-        self.state = RaidState::Ok;
         Ok(())
     }
 
@@ -85,7 +96,7 @@ impl RaidSim {
         if offset >= self.size() {
             return Err(RaidError::OffsetTooLarge(offset));
         }
-        if self.state == RaidState::Failed {
+        if self.state() == RaidState::Failed {
             return Err(RaidError::Failed);
         }
         let old_data = self.read(offset).unwrap();
@@ -103,7 +114,7 @@ impl RaidSim {
         if offset >= self.size() {
             return Err(RaidError::OffsetTooLarge(offset));
         }
-        if self.state == RaidState::Failed {
+        if self.state() == RaidState::Failed {
             return Err(RaidError::Failed);
         }
         let drive_offset = offset % self.drive_size;
@@ -181,6 +192,12 @@ impl RaidSim {
             .iter()
             .filter_map(|d| d.is_formatted().not().then_some(d))
     }
+    /// Returns an iterator of mutable references to drives that are unformatted
+    pub fn unformatted_mut(&mut self) -> impl Iterator<Item = &mut Drive> {
+        self.drives
+            .iter_mut()
+            .filter_map(|d| d.is_formatted().not().then_some(d))
+    }
     /// Returns an iterator of immutable references to drives that haven't failed
     pub fn not_failed(&self) -> impl Iterator<Item = &Drive> {
         self.drives
@@ -197,7 +214,6 @@ impl RaidSim {
     pub fn fail_random(&mut self) {
         let drive = self.not_failed_mut().choose(&mut rand::rng()).unwrap();
         drive.fail();
-        self.update_state();
     }
     /// Chooses a random data drive that hasn't failed yet and marks it as failed
     pub fn fail_random_data(&mut self) {
@@ -207,22 +223,57 @@ impl RaidSim {
             .choose(&mut rand::rng())
             .unwrap();
         drive.fail();
-        self.update_state();
     }
     /// Mark the P parity drive as failed
     pub fn fail_p_parity(&mut self) {
         self.p_parity_mut().fail();
-        self.update_state();
     }
-    /// Updates the state of the array to match
-    pub fn update_state(&mut self) {
-        let count = self.failed().count() + self.unformatted().count();
-        if count > 2 || (count > 1 && self.mode == RaidMode::Raid5) {
-            self.state = RaidState::Failed;
-        } else if count > 0 {
-            self.state = RaidState::Degraded;
-        } else {
-            self.state = RaidState::Ok;
+    /// Replaces failed drives with empty, functioning drives
+    pub fn replace_failed_drives(&mut self) {
+        for i in 0..self.drives.len() {
+            if self.drives[i].has_failed() {
+                let drive = Drive::empty(self.drive_size);
+                self.drives[i] = drive;
+            }
+        }
+    }
+
+    /// Assumes that the array is already degraded
+    fn reconstitute_raid5(&mut self) -> Result<()> {
+        // Loop over all drives (possibly including P parity) because regardless of which drive is unformatted, the operation remains the same:
+        // XOR all functioning drives
+        let mut data = vec![0u8; self.drive_size];
+
+        for i in 0..data.len() {
+            let v = self
+                .drives
+                .iter()
+                .filter_map(|x| x.is_formatted().then_some(x.read(i)))
+                .collect::<drive::Result<Vec<u8>>>()?
+                .into_iter()
+                .reduce(|acc, x| acc ^ x)
+                .unwrap();
+            data[i] = v;
+        }
+        let drive = self
+            .unformatted_mut()
+            .next()
+            .ok_or_else(|| RaidError::DrivesNeedReplaced)?;
+        drive.set_data(data)?;
+        drive.format();
+        Ok(())
+    }
+
+    /// Reconstitutes data for all unformatted drives with original data
+    pub fn reconstitute(&mut self) -> Result<()> {
+        match self.state() {
+            RaidState::Ok => Ok(()),
+            RaidState::Failed => Err(RaidError::Failed),
+            RaidState::Uninit => Err(RaidError::NotInitialized),
+            RaidState::Degraded => match self.mode {
+                RaidMode::Raid5 => self.reconstitute_raid5(),
+                RaidMode::Raid6 => unimplemented!("coming soon TM"),
+            },
         }
     }
 }
@@ -310,6 +361,27 @@ mod tests {
         sim.fail_random();
         assert_eq!(sim.state(), RaidState::Degraded);
         sim.replace_failed_drives();
+        assert_eq!(sim.unformatted().count(), 1);
         assert_eq!(sim.state(), RaidState::Degraded);
+    }
+
+    #[test]
+    fn raid5_one_data_drive_reconstitute() {
+        let (mut sim, data) = init_random(RaidMode::Raid5);
+        sim.fail_random_data();
+        sim.replace_failed_drives();
+        sim.reconstitute().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid5_p_parity_reconstitute() {
+        let (mut sim, data) = init_random(RaidMode::Raid5);
+        sim.fail_p_parity();
+        sim.replace_failed_drives();
+        sim.reconstitute().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
     }
 }

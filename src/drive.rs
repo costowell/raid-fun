@@ -6,8 +6,6 @@ use thiserror::Error;
 pub enum DriveError {
     #[error("Drive failed")]
     Failed,
-    #[error("Drive unformatted")]
-    Unformatted,
 }
 
 pub type Result<T> = std::result::Result<T, DriveError>;
@@ -48,16 +46,14 @@ impl Drive {
 
     /// Returns true if the drive has not failed and is formatted
     pub fn writeable(&self) -> bool {
-        !self.failed && self.formatted
+        !self.failed
     }
 
     fn writeable_result(&self) -> Result<()> {
         if self.writeable() {
             Ok(())
-        } else if self.failed {
-            Err(DriveError::Failed)
         } else {
-            Err(DriveError::Unformatted)
+            Err(DriveError::Failed)
         }
     }
 
