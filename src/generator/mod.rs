@@ -83,7 +83,7 @@ impl Add<u8> for Gen {
 
     fn add(self, rhs: u8) -> Self::Output {
         Self::Output {
-            n: TABLE.gn_to_n[(TABLE.n_to_gn[self.n as usize] ^ rhs) as usize],
+            n: TABLE.gn_to_n[(self.value() ^ rhs) as usize],
         }
     }
 }
@@ -92,6 +92,15 @@ impl Add<Gen> for u8 {
 
     fn add(self, rhs: Gen) -> Self::Output {
         rhs + self
+    }
+}
+impl Add<Gen> for Gen {
+    type Output = Gen;
+
+    fn add(self, rhs: Gen) -> Self::Output {
+        Self::Output {
+            n: TABLE.gn_to_n[(self.value() ^ rhs.value()) as usize],
+        }
     }
 }
 
@@ -130,12 +139,18 @@ impl BitXor<u8> for Gen {
         self.value() ^ rhs
     }
 }
-
 impl BitXor<Gen> for u8 {
     type Output = u8;
 
     fn bitxor(self, rhs: Gen) -> Self::Output {
         self ^ rhs.value()
+    }
+}
+impl BitXor<Gen> for Gen {
+    type Output = u8;
+
+    fn bitxor(self, rhs: Gen) -> Self::Output {
+        self.value() ^ rhs.value()
     }
 }
 
