@@ -21,7 +21,7 @@ pub enum RaidError {
     OffsetTooLarge(usize),
     #[error("array failed")]
     Failed,
-    #[error("drives must be replaced before being reconstituted")]
+    #[error("drives must be replaced before being repaired")]
     DrivesNeedReplaced,
     #[error("array not initialized")]
     NotInitialized,
@@ -333,42 +333,120 @@ impl RaidSim {
         }
     }
 
-    /// Assumes that the array is already degraded
-    fn reconstitute_raid5(&mut self) -> Result<()> {
-        // Loop over all drives (possibly including P parity) because regardless of which drive is unformatted, the operation remains the same:
-        // XOR all functioning drives
-        let mut data = vec![0u8; self.drive_size];
-
-        for i in 0..data.len() {
-            let v = self
-                .drives
-                .iter()
-                .filter_map(|x| x.is_formatted().then_some(x.read(i)))
-                .collect::<drive::Result<Vec<u8>>>()?
-                .into_iter()
-                .reduce(|acc, x| acc ^ x)
-                .unwrap();
-            data[i] = v;
+    fn repair_p_parity(&mut self) -> Result<()> {
+        for i in 0..self.drive_size {
+            let byte = self.p_parity_offset_ignore(i, vec![])?;
+            self.p_parity_mut().write(i, byte)?;
         }
-        let drive = self
-            .unformatted_mut()
-            .next()
-            .ok_or_else(|| RaidError::DrivesNeedReplaced)?;
-        drive.set_data(data)?;
-        drive.format();
+        self.p_parity_mut().format();
+        Ok(())
+    }
+    fn repair_q_parity(&mut self) -> Result<()> {
+        for i in 0..self.drive_size {
+            let byte = self.q_parity_offset_ignore(i, vec![])?;
+            self.q_parity_mut().write(i, byte)?;
+        }
+        self.q_parity_mut().format();
+        Ok(())
+    }
+    fn repair_single_data_p_parity(&mut self, idx: usize) -> Result<()> {
+        for i in 0..self.drive_size {
+            let byte = self.p_parity_offset_ignore(i, vec![idx])? ^ self.p_parity().read(i)?;
+            self.data_drives_mut().nth(idx).unwrap().write(i, byte)?;
+        }
+        self.data_drives_mut().nth(idx).unwrap().format();
+        Ok(())
+    }
+    fn repair_single_data_q_parity(&mut self, idx: usize) -> Result<()> {
+        for i in 0..self.drive_size {
+            let byte = self.q_parity_offset_ignore(i, vec![idx])? ^ self.q_parity().read(i)?;
+            let byte = byte / Gen::from_power(idx);
+            self.data_drives_mut()
+                .nth(idx)
+                .unwrap()
+                .write(i, byte.value())?;
+        }
+        self.data_drives_mut().nth(idx).unwrap().format();
+        Ok(())
+    }
+    fn repair_double_data(&mut self, x: usize, y: usize) -> Result<()> {
+        for i in 0..self.drive_size {
+            let p_xy = self.p_parity_offset_ignore(i, vec![x as usize, y as usize])?;
+            let q_xy = self.q_parity_offset_ignore(i, vec![x as usize, y as usize])?;
+            let p = self.p_parity().read(i)?;
+            let q = self.q_parity().read(i)?;
+            let a = Gen::from_power(y - x) / (Gen::from_power(y - x) + 1);
+            let b = Gen::from_power(-(x as i16)) / (Gen::from_power(y - x) + 1);
+
+            let dx = (a * (p ^ p_xy)) ^ (b * (q ^ q_xy));
+            let dy = p ^ p_xy ^ dx;
+            self.data_drives_mut().nth(x).unwrap().write(i, dx)?;
+            self.data_drives_mut().nth(y).unwrap().write(i, dy)?;
+        }
+        self.data_drives_mut().nth(x).unwrap().format();
+        self.data_drives_mut().nth(y).unwrap().format();
         Ok(())
     }
 
-    /// Reconstitutes data for all unformatted drives with original data
-    pub fn reconstitute(&mut self) -> Result<()> {
+    /// Repairs data for all unformatted drives with original data
+    pub fn repair(&mut self) -> Result<()> {
         match self.state() {
             RaidState::Ok => Ok(()),
             RaidState::Failed => Err(RaidError::Failed.into()),
             RaidState::Uninit => Err(RaidError::NotInitialized.into()),
-            RaidState::Degraded => match self.mode {
-                RaidMode::Raid5 => self.reconstitute_raid5(),
-                RaidMode::Raid6 => unimplemented!("coming soon TM"),
-            },
+            RaidState::Degraded => {
+                let p_unfmtd = !self.p_parity().is_formatted();
+                let q_unfmtd = !self.q_parity().is_formatted();
+                let num_unfmtd = self.unformatted().count();
+                if num_unfmtd == 1 {
+                    if p_unfmtd {
+                        self.repair_p_parity()?;
+                    } else if q_unfmtd {
+                        self.repair_q_parity()?;
+                    } else {
+                        let idx = self
+                            .data_drives()
+                            .enumerate()
+                            .filter_map(|(i, d)| d.is_formatted().not().then_some(i))
+                            .next()
+                            .unwrap();
+                        self.repair_single_data_p_parity(idx)?;
+                    }
+                } else {
+                    if p_unfmtd && q_unfmtd {
+                        self.repair_p_parity()?;
+                        self.repair_q_parity()?;
+                    } else if q_unfmtd {
+                        let idx = self
+                            .data_drives()
+                            .enumerate()
+                            .filter_map(|(i, d)| d.is_formatted().not().then_some(i))
+                            .next()
+                            .unwrap();
+                        self.repair_single_data_p_parity(idx)?;
+                        self.repair_q_parity()?;
+                    } else if p_unfmtd {
+                        let idx = self
+                            .data_drives()
+                            .enumerate()
+                            .filter_map(|(i, d)| d.is_formatted().not().then_some(i))
+                            .next()
+                            .unwrap();
+                        self.repair_single_data_q_parity(idx)?;
+                        self.repair_p_parity()?;
+                    } else {
+                        let mut iter = self
+                            .data_drives()
+                            .enumerate()
+                            .filter_map(|(i, d)| d.is_formatted().not().then_some(i));
+                        let x = iter.next().unwrap();
+                        let y = iter.next().unwrap();
+                        drop(iter);
+                        self.repair_double_data(x, y)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -470,21 +548,21 @@ mod tests {
     }
 
     #[test]
-    fn raid5_one_data_drive_reconstitute() {
+    fn raid5_one_data_drive_repair() {
         let (mut sim, data) = init_random(RaidMode::Raid5);
         sim.fail_random_data();
         sim.replace_failed_drives();
-        sim.reconstitute().unwrap();
+        sim.repair().unwrap();
         assert_eq!(sim.state(), RaidState::Ok);
         assert_sim_equal(&sim, &data);
     }
 
     #[test]
-    fn raid5_p_parity_reconstitute() {
+    fn raid5_p_parity_repair() {
         let (mut sim, data) = init_random(RaidMode::Raid5);
         sim.fail_p_parity();
         sim.replace_failed_drives();
-        sim.reconstitute().unwrap();
+        sim.repair().unwrap();
         assert_eq!(sim.state(), RaidState::Ok);
         assert_sim_equal(&sim, &data);
     }
@@ -581,5 +659,79 @@ mod tests {
         sim.replace_failed_drives();
         assert_eq!(sim.unformatted().count(), 2);
         assert_eq!(sim.state(), RaidState::Degraded);
+    }
+
+    #[test]
+    fn raid6_one_data_drive_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_random_data();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_p_parity_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_p_parity();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_q_parity_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_q_parity();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_q_parity_and_one_data_drive_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_q_parity();
+        sim.fail_random_data();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_p_parity_and_one_data_drive_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_p_parity();
+        sim.fail_random_data();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_p_parity_and_q_parity_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_p_parity();
+        sim.fail_q_parity();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_two_data_drive_repair() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        sim.fail_random_data();
+        sim.fail_random_data();
+        sim.replace_failed_drives();
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
     }
 }
