@@ -1,7 +1,7 @@
 mod table;
 
 use crate::generator::table::MTable;
-use std::ops::{Add, BitXorAssign, Div, Mul};
+use std::ops::{Add, BitXor, BitXorAssign, Div, Mul};
 
 use static_init::dynamic;
 
@@ -123,12 +123,28 @@ impl FromPower<usize> for Gen {
     }
 }
 
+impl BitXor<u8> for Gen {
+    type Output = u8;
+
+    fn bitxor(self, rhs: u8) -> Self::Output {
+        self.value() ^ rhs
+    }
+}
+
+impl BitXor<Gen> for u8 {
+    type Output = u8;
+
+    fn bitxor(self, rhs: Gen) -> Self::Output {
+        self ^ rhs.value()
+    }
+}
+
 impl BitXorAssign<Gen> for u8 {
     fn bitxor_assign(&mut self, rhs: Gen) {
         if rhs.n == ZERO {
             return;
         }
-        *self ^= TABLE.n_to_gn[rhs.n as usize]
+        *self ^= rhs.value();
     }
 }
 

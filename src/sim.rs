@@ -139,8 +139,7 @@ impl RaidSim {
             // Which means XORing the old and new data, applying the generator g^k, then XORing the original Q parity byte will yield the new P parity byte
             q_parity.write(
                 drive_offset,
-                q_parity.read(drive_offset)?
-                    ^ (Gen::from_power(drive_index) * (old_data ^ data)).value(),
+                q_parity.read(drive_offset)? ^ (Gen::from_power(drive_index) * (old_data ^ data)),
             )?;
         }
         Ok(())
@@ -195,7 +194,7 @@ impl RaidSim {
                     .map(|(i, d)| d.read(drive_offset).map(|x| (i, x)))
                     .collect::<drive::Result<Vec<(usize, u8)>>>()?
                     .into_iter()
-                    .fold(0, |acc, (i, x)| acc ^ (Gen::from_power(i) * x).value())
+                    .fold(0, |acc, (i, x)| acc ^ (Gen::from_power(i) * x))
                     ^ self
                         .q_parity()
                         .read(drive_offset)
