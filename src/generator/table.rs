@@ -5,17 +5,14 @@ pub fn nth_bit(num: u8, idx: u8) -> u8 {
     (num >> idx) & 1
 }
 
-/// Applies the {02} generator from GF(2^8) modded by x^8 + x^4 + x^3 + x^2 + 1
+/// Applies the {02} generator from GF(2^8), what is effectively the element x, modded by x^8 + x^4 + x^3 + x^2 + 1
 fn raid6_generator(num: u8) -> u8 {
-    let seventh = nth_bit(num, 7);
-    (nth_bit(num, 6) << 7)
-        | (nth_bit(num, 5) << 6)
-        | (nth_bit(num, 4) << 5)
-        | (nth_bit(num, 3).bitxor(seventh) << 4)
-        | (nth_bit(num, 2).bitxor(seventh) << 3)
-        | (nth_bit(num, 1).bitxor(seventh) << 2)
-        | (nth_bit(num, 0) << 1)
-        | (nth_bit(num, 7))
+    let m = if nth_bit(num, 7) == 1 {
+        0x1d // Effectively x^4 + x^3 + x^2 + 1
+    } else {
+        0
+    };
+    (num << 1) ^ m
 }
 
 /// Represents a table of repeated multiplication by the generator {02} in GF(2^8) modded by x^8 + x^4 + x^3 + x^2 + 1
