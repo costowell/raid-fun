@@ -1,6 +1,6 @@
 use std::ops::Not;
 
-use rand::{seq::IteratorRandom, Rng};
+use rand::seq::IteratorRandom;
 
 use crate::drive::{self, Drive, DriveError};
 
@@ -13,8 +13,10 @@ const Q_INDEX: usize = 1;
 pub enum RaidError {
     #[error("drive error")]
     DriveError(#[from] DriveError),
-    #[error("offset of {0} bigger than drive")]
+    #[error("offset of {0} bigger than array")]
     OffsetTooLarge(usize),
+    #[error("array failed")]
+    Failed,
 }
 
 type Result<T> = std::result::Result<T, RaidError>;
@@ -25,7 +27,7 @@ pub enum RaidMode {
     Raid6,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RaidState {
     /// Array has not been initialized yet
     Uninit,
@@ -83,6 +85,9 @@ impl RaidSim {
         if offset >= self.size() {
             return Err(RaidError::OffsetTooLarge(offset));
         }
+        if self.state == RaidState::Failed {
+            return Err(RaidError::Failed);
+        }
         let old_data = self.read(offset).unwrap();
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
@@ -98,6 +103,9 @@ impl RaidSim {
         if offset >= self.size() {
             return Err(RaidError::OffsetTooLarge(offset));
         }
+        if self.state == RaidState::Failed {
+            return Err(RaidError::Failed);
+        }
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
         let (abs_idx, drive) = self.data_drives().nth(drive_index).unwrap();
@@ -105,12 +113,12 @@ impl RaidSim {
             let data = self
                 .data_drives()
                 .filter(|(i, _)| *i != abs_idx)
-                .map(|(_, d)| d.read(drive_index))
+                .map(|(_, d)| d.read(drive_offset))
                 .collect::<drive::Result<Vec<u8>>>()?
                 .into_iter()
                 .reduce(|acc, x| acc ^ x)
                 .unwrap()
-                ^ self.p_parity().read(drive_index)?;
+                ^ self.p_parity().read(drive_offset)?;
             Ok(data)
         } else {
             Ok(drive.read(drive_offset)?)
@@ -129,7 +137,7 @@ impl RaidSim {
     /// Updates the P parity drive to be consistent with the current array
     fn write_p_parity(&mut self) -> Result<()> {
         let mut p_drive_data = vec![0u8; self.drive_size];
-        for (i, d) in self.data_drives() {
+        for (_, d) in self.data_drives() {
             for i in 0..self.drive_size {
                 p_drive_data[i] ^= d.read(i)?;
             }
@@ -195,6 +203,11 @@ impl RaidSim {
         drive.fail();
         self.update_state();
     }
+    /// Mark the P parity drive as failed
+    pub fn fail_p_parity(&mut self) {
+        self.p_parity_mut().fail();
+        self.update_state();
+    }
     /// Updates the state of the array to match
     pub fn update_state(&mut self) {
         let count = self.failed().count();
@@ -205,5 +218,79 @@ impl RaidSim {
         } else {
             self.state = RaidState::Ok;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::Rng;
+
+    use super::*;
+
+    fn init_random(mode: RaidMode, num_drives: usize, drive_size: usize) -> (RaidSim, Vec<u8>) {
+        let mut sim = RaidSim::new(mode, num_drives, drive_size);
+        let mut data = vec![0u8; sim.size()];
+        rand::rng().fill(data.as_mut_slice());
+        sim.init().expect("Shit");
+        for i in 0..sim.size() {
+            sim.write(i, data[i]).unwrap();
+        }
+        (sim, data)
+    }
+
+    fn assert_sim_equal(sim: &RaidSim, data: &Vec<u8>) {
+        for i in 0..sim.size() {
+            if sim.read(i).unwrap() != data[i] {
+                panic!(
+                    "sim.read(i) != data[i], i={}, {} != {}",
+                    i,
+                    sim.read(i).unwrap(),
+                    data[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raid5_test_init() {
+        let (sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        assert_sim_equal(&sim, &data);
+        assert_eq!(sim.state(), RaidState::Ok);
+    }
+
+    #[test]
+    fn raid5_one_data_drive_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        sim.fail_random_data();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid5_p_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        sim.fail_p_parity();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid5_one_data_drive_and_p_parity_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        sim.fail_random_data();
+        sim.fail_p_parity();
+        assert_eq!(sim.state(), RaidState::Failed);
+        assert!(sim.write(0, 0).is_err());
+        assert!(sim.read(0).is_err());
+    }
+
+    #[test]
+    fn raid5_two_data_drive_failure() {
+        let (mut sim, data) = init_random(RaidMode::Raid5, 16, 4);
+        sim.fail_random_data();
+        sim.fail_random_data();
+        assert_eq!(sim.state(), RaidState::Failed);
+        assert!(sim.write(0, 0).is_err());
+        assert!(sim.read(0).is_err());
     }
 }
