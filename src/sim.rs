@@ -1,0 +1,198 @@
+use std::ops::Not;
+
+use rand::Rng;
+
+use crate::drive::{self, Drive, DriveError};
+
+use thiserror::Error;
+
+const P_INDEX: usize = 0;
+const Q_INDEX: usize = 1;
+
+#[derive(Error, Debug)]
+pub enum RaidError {
+    #[error("drive error")]
+    DriveError(#[from] DriveError),
+    #[error("offset of {0} bigger than drive")]
+    OffsetTooLarge(usize),
+}
+
+type Result<T> = std::result::Result<T, RaidError>;
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum RaidMode {
+    Raid5,
+    Raid6,
+}
+
+#[derive(Debug, Clone)]
+pub enum RaidState {
+    /// Array has not been initialized yet
+    Uninit,
+    /// Array is functioning as normal
+    Ok,
+    /// One or more drives has failed, extra computation is needed to retrieve some data
+    Degraded,
+    /// Too many drives have failed, data has been lost
+    Failed,
+}
+
+#[derive(Debug)]
+pub struct RaidSim {
+    drives: Vec<Drive>,
+    drive_size: usize,
+    mode: RaidMode,
+    state: RaidState,
+}
+
+impl RaidSim {
+    /// Creates a new instance of a Raid Simulation
+    pub fn new(mode: RaidMode, num_drives: usize, drive_size: usize) -> Self {
+        RaidSim {
+            drives: (0..num_drives)
+                .into_iter()
+                .map(|_| Drive::empty(drive_size))
+                .collect(),
+            state: RaidState::Uninit,
+            drive_size,
+            mode,
+        }
+    }
+
+    /// Gets the total number of bytes storable in the array
+    pub fn size(&self) -> usize {
+        self.data_drives().count() * self.drive_size
+    }
+
+    /// Gets the current state of the array
+    pub fn state(&self) -> RaidState {
+        self.state.clone()
+    }
+
+    /// Initializes the array by formatting all drives
+    pub fn init(&mut self) -> Result<()> {
+        for d in &mut self.drives {
+            d.format();
+        }
+        self.state = RaidState::Ok;
+        Ok(())
+    }
+
+    /// Writes a byte at a specific offset in the array
+    pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
+        if offset >= self.size() {
+            return Err(RaidError::OffsetTooLarge(offset));
+        }
+        let old_data = self.read(offset).unwrap();
+        let drive_offset = offset % self.drive_size;
+        let drive_index = offset / self.drive_size;
+        let (_, drive) = self.data_drives_mut().nth(drive_index).unwrap();
+        drive.write(drive_offset, data)?;
+        let p_parity = self.p_parity_mut();
+        p_parity.write(drive_offset, p_parity.read(drive_offset)? ^ old_data ^ data)?;
+        Ok(())
+    }
+
+    /// Reads a byte at a specific offset in the array
+    pub fn read(&self, offset: usize) -> Result<u8> {
+        if offset >= self.size() {
+            return Err(RaidError::OffsetTooLarge(offset));
+        }
+        let drive_offset = offset % self.drive_size;
+        let drive_index = offset / self.drive_size;
+        let (abs_idx, drive) = self.data_drives().nth(drive_index).unwrap();
+        if drive.has_failed() {
+            let data = self
+                .data_drives()
+                .filter(|(i, _)| *i != abs_idx)
+                .map(|(_, d)| d.read(drive_index))
+                .collect::<drive::Result<Vec<u8>>>()?
+                .into_iter()
+                .reduce(|acc, x| acc ^ x)
+                .unwrap()
+                ^ self.p_parity().read(drive_index)?;
+            Ok(data)
+        } else {
+            Ok(drive.read(drive_offset)?)
+        }
+    }
+
+    /// Returns an immutable reference to the drive used for P parity
+    pub fn p_parity(&self) -> &Drive {
+        &self.drives[P_INDEX]
+    }
+    /// Returns a mutable reference to the drive used for P parity
+    fn p_parity_mut(&mut self) -> &mut Drive {
+        &mut self.drives[P_INDEX]
+    }
+
+    /// Updates the P parity drive to be consistent with the current array
+    fn write_p_parity(&mut self) -> Result<()> {
+        let mut p_drive_data = vec![0u8; self.drive_size];
+        for (i, d) in self.data_drives() {
+            for i in 0..self.drive_size {
+                p_drive_data[i] ^= d.read(i)?;
+            }
+        }
+        self.p_parity_mut().set_data(p_drive_data)?;
+        Ok(())
+    }
+
+    /// Returns an iterator of tuples (I, D) where I is the absolute index in the drives array and D is an immutable reference to the corresponding data drive
+    pub fn data_drives(&self) -> impl Iterator<Item = (usize, &Drive)> {
+        let start = match self.mode {
+            RaidMode::Raid5 => 1,
+            RaidMode::Raid6 => 2,
+        };
+        self.drives[start..]
+            .iter()
+            .enumerate()
+            .map(move |(i, d)| (i + start, d))
+    }
+    /// Returns an iterator of tuples (I, D) where I is the absolute index in the drives array and D is a mutable reference to the corresponding data drive
+    fn data_drives_mut(&mut self) -> impl Iterator<Item = (usize, &mut Drive)> {
+        let start = match self.mode {
+            RaidMode::Raid5 => 1,
+            RaidMode::Raid6 => 2,
+        };
+        self.drives[start..]
+            .iter_mut()
+            .enumerate()
+            .map(move |(i, d)| (i + start, d))
+    }
+
+    /// Returns a vector of indices for all failed drives
+    pub fn failed(&self) -> Vec<usize> {
+        self.drives
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| d.has_failed().then_some(i))
+            .collect()
+    }
+    /// Returns a vector of indices for all drives that haven't failed
+    pub fn not_failed(&self) -> Vec<usize> {
+        self.drives
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| d.has_failed().not().then_some(i))
+            .collect()
+    }
+    /// Chooses a random drive that hasn't failed yet and marks it as failed
+    pub fn fail_random(&mut self) {
+        let not_failed = self.not_failed();
+        let r = rand::rng().random_range(0..not_failed.len());
+        self.drives[not_failed[r]].fail();
+        self.update_state();
+    }
+    /// Updates the state of the array to match
+    pub fn update_state(&mut self) {
+        let count = self.failed().iter().count();
+        if count > 2 || (count > 1 && self.mode == RaidMode::Raid5) {
+            self.state = RaidState::Failed;
+        } else if count > 0 {
+            self.state = RaidState::Degraded;
+        } else {
+            self.state = RaidState::Ok;
+        }
+    }
+}

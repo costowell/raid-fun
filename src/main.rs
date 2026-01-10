@@ -2,6 +2,7 @@
 mod drive;
 mod generator;
 mod raid;
+mod sim;
 
 use std::panic;
 

@@ -1,12 +1,23 @@
 use base64::prelude::*;
-use rand::prelude::*;
 use std::fmt::Display;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DriveError {
+    #[error("Drive failed")]
+    Failed,
+    #[error("Drive unformatted")]
+    Unformatted,
+}
+
+pub type Result<T> = std::result::Result<T, DriveError>;
 
 /// Represents a hard drive with variable bytes
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Drive {
     data: Vec<u8>,
     failed: bool,
+    formatted: bool,
 }
 
 impl Display for Drive {
@@ -21,11 +32,9 @@ impl Display for Drive {
 }
 
 impl Drive {
-    /// Creates a drive filled with random data
-    pub fn random(size: usize) -> Self {
-        let mut data = vec![0u8; size];
-        rand::rng().fill_bytes(&mut data);
-        Drive::from_data(data)
+    /// Creates a drive filled with no data
+    pub fn empty(size: usize) -> Self {
+        Drive::from_data(vec![0u8; size])
     }
 
     /// Creates a drive from a vec of data
@@ -33,13 +42,31 @@ impl Drive {
         Self {
             data,
             failed: false,
+            formatted: false,
         }
     }
 
-    /// Returns the byte at a given index
-    pub fn byte_at(&self, idx: usize) -> u8 {
-        self.panic_failed();
-        self.data[idx]
+    /// Returns true if the drive has not failed and is formatted
+    pub fn writeable(&self) -> bool {
+        !self.failed && self.formatted
+    }
+
+    fn writeable_result(&self) -> Result<()> {
+        if self.writeable() {
+            Ok(())
+        } else if self.failed {
+            Err(DriveError::Failed)
+        } else {
+            Err(DriveError::Unformatted)
+        }
+    }
+
+    /// Sets the drive's data
+    pub fn set_data(&mut self, data: Vec<u8>) -> Result<()> {
+        self.writeable_result()?;
+        assert_eq!(data.len(), self.data.len());
+        self.data = data;
+        Ok(())
     }
 
     /// Marks a drive as failed
@@ -48,24 +75,30 @@ impl Drive {
     }
 
     /// Returns whether the drive has failed
-    pub fn is_failed(&self) -> bool {
+    pub fn has_failed(&self) -> bool {
         self.failed
     }
 
-    /// Creates a new drive by XORing each byte with another drive
-    pub fn xor_drive(&self, other: &Drive) -> Drive {
-        self.panic_failed();
-        let mut data = self.data.clone();
-        for i in 0..data.len() {
-            data[i] ^= other.byte_at(i);
-        }
-        Drive::from_data(data)
+    /// Marks a drive as formatted
+    pub fn format(&mut self) {
+        self.formatted = true;
     }
 
-    /// Helper function to panic if the drive has failed
-    fn panic_failed(&self) {
-        if self.failed {
-            panic!("Drive has failed! Data inaccessible!")
-        }
+    /// Returns whether the drive is formatted
+    pub fn is_formatted(&self) -> bool {
+        self.formatted
+    }
+
+    /// Reads the byte at the specified offset
+    pub fn read(&self, offset: usize) -> Result<u8> {
+        self.writeable_result()?;
+        Ok(self.data[offset])
+    }
+
+    /// Writes the byte at the specified offset
+    pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
+        self.writeable_result()?;
+        self.data[offset] = data;
+        Ok(())
     }
 }

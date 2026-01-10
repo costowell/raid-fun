@@ -56,7 +56,7 @@ impl State {
         self.drives
             .iter()
             .enumerate()
-            .filter(|(_, x)| x.is_failed())
+            .filter(|(_, x)| x.has_failed())
             .map(|(i, _)| i)
             .collect()
     }
@@ -66,7 +66,7 @@ impl State {
         let mut data = vec![0u8; self.drive_size];
         for drive in &self.drives {
             for i in 0..self.drive_size {
-                data[i] ^= drive.byte_at(i);
+                data[i] ^= drive.read(i);
             }
         }
         Drive::from_data(data)
@@ -81,7 +81,7 @@ impl State {
                 .iter()
                 .enumerate()
                 .filter(|(idx, _)| !ignore.contains(idx))
-                .map(|(_, x)| x.byte_at(i))
+                .map(|(_, x)| x.read(i))
                 .reduce(|acc, x| acc ^ x)
                 .unwrap()
         }
@@ -99,7 +99,7 @@ impl State {
         for (d, drive) in self.drives.iter().enumerate() {
             for i in 0..self.drive_size {
                 // Q_i = D_xi * g^d
-                data[i] ^= drive.byte_at(i) * Gen::from_power(d as u8);
+                data[i] ^= drive.read(i) * Gen::from_power(d as u8);
             }
         }
         Drive::from_data(data)
@@ -116,7 +116,7 @@ impl State {
         for (d, drive) in self.drives.iter().enumerate() {
             for i in 0..self.drive_size {
                 if !ignore.contains(&d) {
-                    data[i] ^= drive.byte_at(i) * Gen::from_power(d as u8);
+                    data[i] ^= drive.read(i) * Gen::from_power(d as u8);
                 }
             }
         }
@@ -133,7 +133,7 @@ impl State {
 
         let mut data = vec![0u8; self.drive_size];
         for i in 0..self.drive_size {
-            data[i] = (drive.byte_at(i) * gn).value();
+            data[i] = (drive.read(i) * gn).value();
         }
         Drive::from_data(data)
     }
