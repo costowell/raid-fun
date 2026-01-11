@@ -401,7 +401,7 @@ impl RaidSim {
                 if num_unfmtd == 1 {
                     if p_unfmtd {
                         self.repair_p_parity()?;
-                    } else if q_unfmtd {
+                    } else if self.mode == RaidMode::Raid6 && q_unfmtd {
                         self.repair_q_parity()?;
                     } else {
                         let idx = self
