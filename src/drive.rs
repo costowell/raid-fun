@@ -85,6 +85,10 @@ impl Drive {
         self.formatted
     }
 
+    pub fn usable(&self) -> bool {
+        !self.failed && self.formatted
+    }
+
     /// Reads the byte at the specified offset
     pub fn read(&self, offset: usize) -> Result<u8> {
         self.writeable_result()?;

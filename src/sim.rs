@@ -111,7 +111,7 @@ impl RaidSim {
 
         // Compute new P parity
         let p_parity = self.p_parity_mut();
-        if !p_parity.has_failed() {
+        if p_parity.usable() {
             // Formally, if p is the original P parity byte and p_k is the new P parity byte where d_k (the byte on drive k) becomes d'
             // Then it follows that
             // p   = d_0 + d_1 + ... + d_n-1
@@ -126,7 +126,7 @@ impl RaidSim {
 
         // Compute new Q parity
         let q_parity = self.q_parity();
-        if self.mode == RaidMode::Raid6 && !q_parity.has_failed() {
+        if self.mode == RaidMode::Raid6 && q_parity.usable() {
             let q_parity = self.q_parity_mut();
             // Formally, if q is the original Q parity byte and q_k is the new Q parity byte where d_k (the byte on drive k) becomes d'
             // Then it follows that
@@ -182,7 +182,7 @@ impl RaidSim {
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
         let drive = self.data_drives().nth(drive_index).unwrap();
-        if !drive.has_failed() {
+        if drive.usable() {
             Ok(drive.read(drive_offset)?)
         } else {
             // At this point we are guaranteed at least one failed data drive because its the one we are trying to write to.
@@ -196,15 +196,18 @@ impl RaidSim {
             // - One data drive and P parity failed: Use Q parity to read
             // - One data drive and Q parity failed: Use P parity to read
 
+            let p_unusable = !self.p_parity().usable();
+            let q_unusable = !self.q_parity().usable();
+
             // If one drive failed or two have failed and the other is Q parity
-            if self.failed().count() == 1 || self.q_parity().has_failed() {
+            if self.unusable().count() == 1 || q_unusable {
                 let data = self.p_parity_offset_ignore(drive_offset, vec![drive_index])?
                     ^ self
                         .p_parity()
                         .read(drive_offset)
                         .context("failed to read parity")?;
                 Ok(data)
-            } else if self.p_parity().has_failed() {
+            } else if p_unusable {
                 let data = self.q_parity_offset_ignore(drive_offset, vec![drive_index])?
                     ^ self
                         .q_parity()
@@ -217,7 +220,7 @@ impl RaidSim {
                 let y = self
                     .data_drives()
                     .enumerate()
-                    .filter(|(i, d)| *i != drive_index && d.has_failed())
+                    .filter(|(i, d)| *i != drive_index && !d.usable())
                     .map(|(i, _)| i)
                     .next()
                     .expect("Expected a second distinct failed drive, found none")
@@ -276,6 +279,14 @@ impl RaidSim {
         self.drives
             .iter()
             .filter_map(|d| d.has_failed().then_some(d))
+    }
+    /// Returns an iterator of immutable references to drives that cannot be used.
+    /// A drive is unusable if it has either failed or hasn't been formatted
+    /// This is useful for standard read or writes which shouldn't ever touch failed or unformatted drives.
+    pub fn unusable(&self) -> impl Iterator<Item = &Drive> {
+        self.drives
+            .iter()
+            .filter_map(|d| (d.has_failed() || !d.is_formatted()).then_some(d))
     }
     /// Returns an iterator of immutable references to drives that are unformatted
     pub fn unformatted(&self) -> impl Iterator<Item = &Drive> {
@@ -732,6 +743,42 @@ mod tests {
         sim.replace_failed_drives();
         sim.repair().unwrap();
         assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+    }
+
+    #[test]
+    fn raid6_battle_test() {
+        let (mut sim, data) = init_random(RaidMode::Raid6);
+        // Check initial state
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+
+        // Fail one drive, test degraded read and write works
+        sim.fail_random();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+
+        // Fail another drive, test degraded read and write works
+        sim.fail_random();
+        assert_eq!(sim.state(), RaidState::Degraded);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+
+        // Replace dead drives
+        sim.replace_failed_drives();
+        assert_eq!(sim.state(), RaidState::Degraded);
+
+        // Test we can still (degraded) write despite the drives not being failed anymore
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
+        assert_sim_equal(&sim, &data);
+
+        // Repair
+        sim.repair().unwrap();
+        assert_eq!(sim.state(), RaidState::Ok);
+        assert_sim_equal(&sim, &data);
+        let data = write_random(&mut sim);
         assert_sim_equal(&sim, &data);
     }
 }
