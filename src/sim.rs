@@ -3,29 +3,14 @@ use std::ops::Not;
 use rand::seq::IteratorRandom;
 
 use crate::{
-    drive::{self, Drive, DriveError},
+    drive::Drive,
     generator::{FromPower, Gen},
 };
 
-use anyhow::{Context, Result};
-use thiserror::Error;
+use anyhow::{bail, Context, Result};
 
 const P_INDEX: usize = 0;
 const Q_INDEX: usize = 1;
-
-#[derive(Error, Debug)]
-pub enum RaidError {
-    #[error("drive error")]
-    DriveError(#[from] DriveError),
-    #[error("offset of {0} bigger than array")]
-    OffsetTooLarge(usize),
-    #[error("array failed")]
-    Failed,
-    #[error("drives must be replaced before being repaired")]
-    DrivesNeedReplaced,
-    #[error("array not initialized")]
-    NotInitialized,
-}
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RaidMode {
@@ -96,10 +81,10 @@ impl RaidSim {
     /// Writes a byte at a specific offset in the array
     pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
         if offset >= self.size() {
-            return Err(RaidError::OffsetTooLarge(offset).into());
+            bail!("Offset {} in array of size {}", offset, self.size());
         }
         if self.state() == RaidState::Failed {
-            return Err(RaidError::Failed.into());
+            bail!("Array failed, unable to write");
         }
         let old_data = self.read(offset).unwrap();
         let drive_offset = offset % self.drive_size;
@@ -152,7 +137,7 @@ impl RaidSim {
             .enumerate()
             .filter(|(i, _)| !ignore.contains(i))
             .map(|(_, d)| d.read(offset))
-            .collect::<drive::Result<Vec<u8>>>()?
+            .collect::<Result<Vec<u8>>>()?
             .into_iter()
             .reduce(|acc, x| acc ^ x)
             .unwrap();
@@ -165,7 +150,7 @@ impl RaidSim {
             .enumerate()
             .filter(|(i, _)| !ignore.contains(i))
             .map(|(i, d)| d.read(offset).map(|x| (i, x)))
-            .collect::<drive::Result<Vec<(usize, u8)>>>()?
+            .collect::<Result<Vec<(usize, u8)>>>()?
             .into_iter()
             .fold(0, |acc, (i, x)| acc ^ (Gen::from_power(i) * x));
         Ok(data)
@@ -174,10 +159,10 @@ impl RaidSim {
     /// Reads a byte at a specific offset in the array
     pub fn read(&self, offset: usize) -> Result<u8> {
         if offset >= self.size() {
-            return Err(RaidError::OffsetTooLarge(offset).into());
+            bail!("Offset {} in array of size {}", offset, self.size());
         }
         if self.state() == RaidState::Failed {
-            return Err(RaidError::Failed.into());
+            bail!("Array failed, unable to write");
         }
         let drive_offset = offset % self.drive_size;
         let drive_index = offset / self.drive_size;
@@ -403,8 +388,8 @@ impl RaidSim {
     pub fn repair(&mut self) -> Result<()> {
         match self.state() {
             RaidState::Ok => Ok(()),
-            RaidState::Failed => Err(RaidError::Failed.into()),
-            RaidState::Uninit => Err(RaidError::NotInitialized.into()),
+            RaidState::Failed => bail!("Array failed, unable to repair"),
+            RaidState::Uninit => bail!("Array uninitialized, unable to repair"),
             RaidState::Degraded => {
                 let p_unfmtd = !self.p_parity().is_formatted();
                 let q_unfmtd = !self.q_parity().is_formatted();

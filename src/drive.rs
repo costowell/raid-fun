@@ -1,14 +1,4 @@
-use base64::prelude::*;
-use std::fmt::Display;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum DriveError {
-    #[error("Drive failed")]
-    Failed,
-}
-
-pub type Result<T> = std::result::Result<T, DriveError>;
+use anyhow::{bail, Result};
 
 /// Represents a hard drive with variable bytes
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -16,17 +6,6 @@ pub struct Drive {
     data: Vec<u8>,
     failed: bool,
     formatted: bool,
-}
-
-impl Display for Drive {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Drive<{}>({})",
-            self.data.len(),
-            BASE64_STANDARD.encode(&self.data)
-        )
-    }
 }
 
 impl Drive {
@@ -53,7 +32,7 @@ impl Drive {
         if self.writeable() {
             Ok(())
         } else {
-            Err(DriveError::Failed)
+            bail!("Failed to access drive, failed")
         }
     }
 
