@@ -753,32 +753,35 @@ mod tests {
         assert_eq!(sim.state(), RaidState::Ok);
         assert_sim_equal(&sim, &data);
 
-        // Fail one drive, test degraded read and write works
-        sim.fail_random();
-        assert_eq!(sim.state(), RaidState::Degraded);
-        let data = write_random(&mut sim);
-        assert_sim_equal(&sim, &data);
+        // Do this 10 times just for good measure
+        for _ in 0..10 {
+            // Fail one drive, test degraded read and write works
+            sim.fail_random();
+            assert_eq!(sim.state(), RaidState::Degraded);
+            let data = write_random(&mut sim);
+            assert_sim_equal(&sim, &data);
 
-        // Fail another drive, test degraded read and write works
-        sim.fail_random();
-        assert_eq!(sim.state(), RaidState::Degraded);
-        let data = write_random(&mut sim);
-        assert_sim_equal(&sim, &data);
+            // Fail another drive, test degraded read and write works
+            sim.fail_random();
+            assert_eq!(sim.state(), RaidState::Degraded);
+            let data = write_random(&mut sim);
+            assert_sim_equal(&sim, &data);
 
-        // Replace dead drives
-        sim.replace_failed_drives();
-        assert_eq!(sim.state(), RaidState::Degraded);
+            // Replace dead drives
+            sim.replace_failed_drives();
+            assert_eq!(sim.state(), RaidState::Degraded);
 
-        // Test we can still (degraded) write despite the drives not being failed anymore
-        assert_sim_equal(&sim, &data);
-        let data = write_random(&mut sim);
-        assert_sim_equal(&sim, &data);
+            // Test we can still (degraded) write despite the drives not being failed anymore
+            assert_sim_equal(&sim, &data);
+            let data = write_random(&mut sim);
+            assert_sim_equal(&sim, &data);
 
-        // Repair
-        sim.repair().unwrap();
-        assert_eq!(sim.state(), RaidState::Ok);
-        assert_sim_equal(&sim, &data);
-        let data = write_random(&mut sim);
-        assert_sim_equal(&sim, &data);
+            // Repair
+            sim.repair().unwrap();
+            assert_eq!(sim.state(), RaidState::Ok);
+            assert_sim_equal(&sim, &data);
+            let data = write_random(&mut sim);
+            assert_sim_equal(&sim, &data);
+        }
     }
 }

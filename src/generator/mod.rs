@@ -193,9 +193,11 @@ impl Gen {
     }
 }
 
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
+    #[test]
     pub fn test_zero() {
         // 0 * g^i == 0
         for i in 0..255 {
@@ -203,6 +205,7 @@ pub mod tests {
         }
     }
 
+    #[test]
     pub fn test_one() {
         // 1 == g^0
         assert_eq!(Gen::from(1).power(), 0);
@@ -212,6 +215,7 @@ pub mod tests {
         assert_eq!(Gen::from_power(255), Gen::from_power(0));
     }
 
+    #[test]
     pub fn test_inverses() {
         // Not including 255 because g^255 = g^0 = 1
         for i in 0..255 {
@@ -219,6 +223,7 @@ pub mod tests {
         }
     }
 
+    #[test]
     pub fn test_1d() {
         // Source: Section 1, https://www.kernel.org/pub/linux/kernel/people/hpa/raid6.pdf
         // "Note, however: {02}^8 = {1d}"
