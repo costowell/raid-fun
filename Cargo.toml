@@ -1,7 +1,11 @@
 [package]
-name = "raid-experiments"
+name = "raid-fun"
 version = "0.1.0"
 edition = "2018"
+
+[lib]
+name = "raid"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0.100"

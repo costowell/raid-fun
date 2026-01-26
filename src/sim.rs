@@ -453,7 +453,7 @@ mod tests {
 
     use super::*;
 
-    const NUM_DRIVES: usize = 16;
+    const NUM_DRIVES: usize = 64;
     const DRIVE_SIZE: usize = 1024;
 
     fn init_random(mode: RaidMode) -> (RaidSim, Vec<u8>) {
