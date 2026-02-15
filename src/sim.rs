@@ -78,6 +78,128 @@ impl RaidSim {
         Ok(())
     }
 
+    pub fn write_slice_nth_drive(
+        &mut self,
+        drive_index: usize,
+        drive_offset: usize,
+        data: &[u8],
+    ) -> Result<()> {
+        if drive_offset >= self.drive_size {
+            bail!(
+                "Offset {} in drive of size {}",
+                drive_offset,
+                self.drive_size
+            );
+        }
+        if drive_offset + data.len() >= self.size() {
+            bail!(
+                "Out of bounds write, at offset {} and data length {} in drive of size {}",
+                drive_offset,
+                data.len(),
+                self.drive_size
+            );
+        }
+        if self.state() == RaidState::Failed {
+            bail!("Array failed, unable to write");
+        }
+
+        let mut old_data = vec![0u8; data.len()];
+        for i in drive_offset..(drive_offset + data.len()) {
+            // TODO: read_slice_nth_drive would be reallllly nice right about now
+            old_data[i] = self.read((drive_index * self.drive_size) + i)?;
+        }
+
+        let drive = self.data_drives_mut().nth(drive_index).unwrap();
+        if !drive.has_failed() {
+            drive.write_slice(drive_offset, data)?;
+        }
+
+        let mut parity_data = vec![0u8; data.len()];
+
+        // Compute new P parity
+        let p_parity = self.p_parity_mut();
+        if p_parity.usable() {
+            // Read the to-be-updated parity bytes
+            // parity_data.copy_from_slice(p_parity.read_slice(drive_offset, data.len())?);
+
+            // Formally, if p is the original P parity byte and p_k is the new P parity byte where d_k (the byte on drive k) becomes d'
+            // Then it follows that
+            // p   = d_0 + d_1 + ... + d_n-1
+            // p_k = d_0 + d_1 + ... + d' + ... + d_n-1
+            // Then
+            // p + p_k = d_k + d_'
+            // Therefore
+            // p_k = p + d_k + d'
+            // Which means XORing the P parity byte, the old data on the drive, and the new data will yield the new P parity byte
+            for i in drive_offset..(drive_offset + data.len()) {
+                p_parity.write(i, p_parity.read(i)? ^ old_data[i] ^ data[i])?;
+            }
+        }
+
+        // Compute new Q parity
+        let q_parity = self.q_parity();
+        if self.mode == RaidMode::Raid6 && q_parity.usable() {
+            // Read the to-be-updated parity bytes
+            parity_data.copy_from_slice(q_parity.read_slice(drive_offset, data.len())?);
+
+            let q_parity = self.q_parity_mut();
+            // Formally, if q is the original Q parity byte and q_k is the new Q parity byte where d_k (the byte on drive k) becomes d'
+            // Then it follows that
+            // q   = (g^0 * d_0) + (g^1 * d_1) + ... + (g^n-1 * d_n-1)
+            // q_k = (g^0 * d_0) + (g^1 * d_1) + ... + (g^k * d') + ... + (g^n-1 * d_n-1)
+            // Then
+            // q + q_k = (g^k * d_k) + (g^k * d')
+            // Therefore
+            // q_k = q + g^k * (d_k + d')
+            // Which means XORing the old and new data, applying the generator g^k, then XORing the original Q parity byte will yield the new P parity byte
+            let gk = Gen::from_power(drive_index);
+            for i in drive_offset..(drive_offset + data.len()) {
+                q_parity.write(i, parity_data[i] ^ (gk * (old_data[i] ^ data[i])))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Writes a slice at a specific offset in the array
+    pub fn write_slice(&mut self, offset: usize, data: &[u8]) -> Result<()> {
+        if offset >= self.size() {
+            bail!("Offset {} in array of size {}", offset, self.size());
+        }
+        if offset + data.len() > self.size() {
+            bail!(
+                "Out of bounds write, at offset {} and data length {} in array of size {}",
+                offset,
+                data.len(),
+                self.size()
+            );
+        }
+        if self.state() == RaidState::Failed {
+            bail!("Array failed, unable to write");
+        }
+
+        let mut drive_offset = offset % self.drive_size;
+        let mut drive_index = offset / self.drive_size;
+        let mut data_pos = 0;
+
+        while data_pos < data.len() {
+            // Attempt to get to next drive boundary
+            // Is the space we want to include greater than the space can actually include?
+            if self.drive_size - drive_offset > data.len() - data_pos {
+                self.write_slice_nth_drive(drive_index, drive_offset, &data[data_pos..])?;
+                break;
+            } else {
+                let end_pos = data_pos + (self.drive_size - drive_offset);
+                self.write_slice_nth_drive(drive_index, drive_offset, &data[data_pos..end_pos])?;
+                drive_index += 1;
+                drive_offset = 0;
+                data_pos = end_pos;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Writes a byte at a specific offset in the array
     pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
         if offset >= self.size() {
@@ -466,9 +588,10 @@ mod tests {
     fn write_random(sim: &mut RaidSim) -> Vec<u8> {
         let mut data = vec![0u8; sim.size()];
         rand::rng().fill(data.as_mut_slice());
-        for i in 0..sim.size() {
-            sim.write(i, data[i]).unwrap();
-        }
+        sim.write_slice(0, data.as_slice()).unwrap();
+        // for i in 0..sim.size() {
+        //     sim.write(i, data[i]).unwrap();
+        // }
         data
     }
 

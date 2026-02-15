@@ -74,10 +74,23 @@ impl Drive {
         Ok(self.data[offset])
     }
 
+    /// Reads a slice of a specified length at a specified offset
+    pub fn read_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
+        self.writeable_result()?;
+        Ok(&self.data[offset..(offset + len)])
+    }
+
     /// Writes the byte at the specified offset
     pub fn write(&mut self, offset: usize, data: u8) -> Result<()> {
         self.writeable_result()?;
         self.data[offset] = data;
+        Ok(())
+    }
+
+    /// Writes the slice at the specified offset
+    pub fn write_slice(&mut self, offset: usize, data: &[u8]) -> Result<()> {
+        self.writeable_result()?;
+        self.data[offset..data.len()].copy_from_slice(data);
         Ok(())
     }
 }
